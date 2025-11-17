@@ -104,7 +104,9 @@ class Radiation {
   Real kappa_p;             // Planck - Rosseland mean coefficient
   bool power_opacity;       // flag to enable Kramer's law opacity for kappa_a
   bool is_compton_enabled;  // flag to enable/disable compton
-
+  //xs: add user opacity funtction
+  bool user_opacity;        // flag to enable/disable user-defined opacity
+  
   // radiation source term (i.e., beam)
   SourceTerms *psrc = nullptr;
 

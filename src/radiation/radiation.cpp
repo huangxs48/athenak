@@ -92,6 +92,9 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
       arad = pin->GetReal("radiation","arad");
     }
     affect_fluid = pin->GetOrAddBoolean("radiation","affect_fluid",true);
+    //xs: read in user opacity flag
+    user_opacity = pin->GetOrAddBoolean("user_opacity","compton",false);
+    
   }
 
   // Check for fluid evolution

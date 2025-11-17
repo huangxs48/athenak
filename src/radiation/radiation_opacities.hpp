@@ -45,4 +45,21 @@ void OpacityFunction(// density and density scale
   return;
 }
 
+// //! \fn void UserOpacityFunction
+// //! \brief sets sigma_a, sigma_s, sigma_p in the comoving frame
+// KOKKOS_INLINE_FUNCTION
+// void UserOpacityFunction(// density and density scale
+//                      const Real dens, const Real density_scale,
+//                      // temperature and temperature scale
+//                      const Real temp, const Real temperature_scale,
+//                      // length scale, adiabatic index minus one, mean molecular weight
+//                      const Real length_scale, const Real gm1, const Real mu,
+//                      // power law opacities
+//                      const bool pow_opacity,
+//                      const Real rosseland_coef, const Real planck_minus_rosseland_coef,
+//                      // spatially and temporally constant opacities
+//                      const Real k_a, const Real k_s, const Real k_p,
+//                      // output sigma
+//                      Real& sigma_a, Real& sigma_s, Real& sigma_p);
+
 #endif // RADIATION_RADIATION_OPACITIES_HPP_
