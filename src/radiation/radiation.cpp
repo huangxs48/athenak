@@ -93,7 +93,7 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
     }
     affect_fluid = pin->GetOrAddBoolean("radiation","affect_fluid",true);
     //xs: read in user opacity flag
-    user_opacity = pin->GetOrAddBoolean("user_opacity","compton",false);
+    user_opacity = pin->GetOrAddBoolean("radiation","user_opacity",false);
     
   }
 
