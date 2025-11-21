@@ -44,6 +44,52 @@ private:
   OpacityData() {}  // Private constructor
 };
 
+// Interpolation function, free-free opacity, input cgs output cgs 
+KOKKOS_INLINE_FUNCTION
+Real kappa_ff_nu(Real nu, Real temp, Real rho){
+
+  Real h_planck = 6.626196e-27 ;
+  Real evtohz = 2.41838e14;
+  Real rho_cgs = rho;
+  Real temp_cgs =  temp;
+  Real m_p = m_p = 1.6726e-24;
+  Real k_B = 1.3807e-16;
+  
+  Real  gff = 1.0;
+  Real  z = 1.0;
+
+  Real  he_adbund = 0.04;
+  Real  nh = rho_cgs/m_p/(1.0 + 4.0*he_adbund);
+  Real  nhe = nh*he_adbund;
+  Real  ne = nh + 2.0*nhe;
+  Real  n_rho = rho_cgs/m_p/0.62;
+
+  Real  e_ff = 3.7e8 * pow(temp_cgs, -0.5) * pow(z, 2) * pow(n_rho, 2) * pow(nu, -3) * (1.0 - exp(-h_planck*nu/k_B/temp_cgs)) * gff;
+
+  return e_ff/rho_cgs;
+}
+
+// Interpolation function, planck mean free free absorption
+KOKKOS_INLINE_FUNCTION
+Real kappa_ff_planck(Real temp, Real rho){
+  Real rho_cgs = rho;
+  Real temp_cgs =  temp;
+  Real kappa_cgs = 2.86e-5*(rho_cgs/1.0e-8)*pow(temp_cgs/1.0e6, -3.5);
+
+  return kappa_cgs;
+}
+
+// Interpolation function, rosseland mean free free absorption
+KOKKOS_INLINE_FUNCTION
+Real kappa_ff_ross(Real temp, Real rho){
+  Real rho_cgs = rho;
+  Real temp_cgs =  temp;
+  Real kappa_cgs = 7.73e-7*(rho_cgs/1.0e-8)*pow(temp_cgs/1.0e6, -3.5);
+
+  return kappa_cgs;
+}
+
+
 // Interpolation function, read in an opacity table instance, 
 KOKKOS_INLINE_FUNCTION
 void InterpolateKappa(const OpacityTable& tab, Real rho, Real tgas, Real &kappa_ross, Real &kappa_planck){
@@ -96,16 +142,22 @@ void InterpolateKappa(const OpacityTable& tab, Real rho, Real tgas, Real &kappa_
   Real planck_t2_rho1_gray=tab.kappa_planck(nt2,nrho1);
   Real planck_t2_rho2_gray=tab.kappa_planck(nt2,nrho2);
 
-  //in the case the temperature is out of range, extrapolate planck mean opacity by T^-3.5
+  //in the case the temperature is larger than uplimit, extrapolate planck mean opacity by T^-3.5
   Real logt = log10(tgas);
   Real logtlim_table = log10(tab.temp_grid(n_temp-1));
   if(nt2 == n_temp-1 && (logt > logtlim_table)){
     Real scaling = pow(10.0, -3.5*(logt - logtlim_table));
+    kappa_t1_rho1_gray *= scaling;
+    kappa_t1_rho2_gray *= scaling;
+    kappa_t2_rho1_gray *= scaling;
+    kappa_t2_rho2_gray *= scaling;
+    
     planck_t1_rho1_gray *= scaling;
     planck_t1_rho2_gray *= scaling;
     planck_t2_rho1_gray *= scaling;
     planck_t2_rho2_gray *= scaling;
   }
+
 
   //Note that if density is below the tabulated value, will use the lowest temperature in table
 
