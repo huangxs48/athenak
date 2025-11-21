@@ -63,14 +63,47 @@ void UserOpacityFunction(// density and density scale
                      // output sigma
                      Real& sigma_a, Real& sigma_s, Real& sigma_p){
   
-  //test, simply call InterpolateKappa function
   const auto& tab = OpacityData::GetInstance().table;
   Real kappa_ross_tab, kappa_planck_tab;
 
-  Real rho_test = 1.0e-10;
-  Real temp_test = 3.4e5;
-  InterpolateKappa(tab, rho_test, temp_test, kappa_ross_tab, kappa_planck_tab);
-  std::cout<<"testing for density: "<<rho_test<<" g/cm^3 and temperature: "<<temp_test<<"K, kappa_ross="<<kappa_ross_tab<<", kappa_planck="<<kappa_planck_tab<<std::endl;
+  // Real rho_test = 1.0e-10;
+  // Real temp_test = 3.4e5;
+  // InterpolateKappa(tab, rho_test, temp_test, kappa_ross_tab, kappa_planck_tab);
+
+  // printf("testing for density %g and temperature %g: kappa_ross=%g, kappa_planck=%g\n",
+  // 	 rho_test, temp_test, kappa_ross_tab, kappa_planck_tab);
+
+  Real dens_cgs = dens * density_scale;
+  Real temp_cgs = temp * temperature_scale;
+  InterpolateKappa(tab, dens_cgs, temp_cgs, kappa_ross_tab, kappa_planck_tab);
+  //printf("current density: %g, temperature: %g, kappa_ross: %g, kappa_planck: %g\n", dens_cgs, temp_cgs, kappa_ross_tab, kappa_planck_tab);
+
+  //OPAL/TOPs Rosseland mean opacity is the total absorption, including scatter
+  Real kappa_ross_cgs = 0.0;
+  Real kappa_sct_cgs = 0.0;
+  Real temp_ion_cgs = 1.0e4;
+  Real temp_ion = temp_ion_cgs/temperature_scale;
+
+  //k_s is in c.g.s
+  if (kappa_ross_tab > k_s){
+    kappa_ross_cgs = kappa_ross_tab - k_s;
+    kappa_sct_cgs = k_s;
+  }else{ //if tabulated rosseland mean < scatter  
+    if (temp_cgs < temp_ion_cgs){//below ionization temperature, no scatter opacity
+      kappa_ross_cgs = kappa_ross_tab;
+      kappa_sct_cgs = 0.0;
+    }else{
+      kappa_sct_cgs = kappa_ross_tab;
+      kappa_ross_cgs = 0.0;
+    }
+  }
+  
+  Real kappa_planck_cgs = kappa_planck_tab;
+  
+  //assign to cell
+  sigma_a = dens*kappa_ross_cgs*density_scale*length_scale;
+  sigma_p = dens*kappa_planck_cgs*density_scale*length_scale;
+  sigma_s = dens*kappa_sct_cgs*density_scale*length_scale;
   
   return;
   

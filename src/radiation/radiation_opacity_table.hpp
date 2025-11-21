@@ -84,10 +84,6 @@ void InterpolateKappa(const OpacityTable& tab, Real rho, Real tgas, Real &kappa_
     nt1=nt2;
   }
 
-  std::cout<<"n_temp:"<<n_temp<<" n_rho:"<<n_rho<<std::endl;
-  std::cout<<"input rho:"<<rho<<" tgas:"<<tgas<<std::endl;
-  std::cout<<"nrho1:"<<nrho1<<" nrho2:"<<nrho2<<" nt1:"<<nt1<<" nt2:"<<nt2<<std::endl;
-  
   //STEP2: read the templated opacities, get ready for interpolation
   
   Real kappa_t1_rho1_gray=tab.kappa_ross(nt1,nrho1);
