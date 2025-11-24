@@ -98,7 +98,15 @@ void UserOpacityFunction(// density and density scale
     }
   }
   
-  Real kappa_planck_cgs = kappa_planck_tab;
+  //in code, kappa_planck is difference between kappa_planck and kappa_ross
+  Real kappa_planck_cgs = kappa_planck_tab - kappa_ross_cgs;
+
+  //add another density cut, higher opacity and density before injecting stream
+  if (dens*density_scale < 1.0e-14){
+    kappa_sct_cgs = 1.0e-4; //0.32;
+    kappa_ross_cgs = 1.0e-4; //1.0;
+    kappa_planck_cgs = 1.0e-4; //1.0;
+  }
   
   //assign to cell
   sigma_a = dens*kappa_ross_cgs*density_scale*length_scale;
