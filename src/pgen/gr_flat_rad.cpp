@@ -129,8 +129,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   //-------------------------------
   // load opacity table, write them into an opacitydata instance, so all devices can access to them
   OpacityData& data = OpacityData::GetInstance();
-  OpacityTable& tab = data.table;
-
+  OpacityTable& tab = data.table_host; //tab is the object on host
+  
   int n_rho = tde.n_rho;
   int n_temp = tde.n_temp;
   
@@ -231,10 +231,26 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   Kokkos::deep_copy(tab.kappa_ross, kappa_ross_host);
   Kokkos::deep_copy(tab.kappa_planck, kappa_planck_host);
 
+  // alloate device talbe
+  data.table_device = Kokkos::View<OpacityTable*>("opacity_dev", 1);
+  Kokkos::deep_copy(data.table_device, tab);
+  
   // // quick check the readings
   // for (int i=90; i<100; ++i){
   //   std::cout<<"kappa_ross_host(30, "<<i<<") = "<< kappa_ross_host(30,i)<<", kappa_planck_host(30, "<<i<<")="<< kappa_planck_host(30,i)<<std::endl;
   // }
+
+
+  //chatGPT wrote this debugging block
+  auto dev_tab_view = OpacityData::GetInstance().table_device;
+
+  Kokkos::parallel_for("debug_opacity", 1, KOKKOS_LAMBDA(const int) {
+      OpacityTable tab = dev_tab_view(0);
+      printf("GPU opacity: n_rho=%d n_temp=%d rho0=%g T0=%g\n",
+	     tab.n_rho, tab.n_temp,
+	     tab.rho_grid(0), tab.temp_grid(0));
+  });
+ 
   
   //-------------------------------------
 
@@ -448,7 +464,7 @@ void FixedStreamInflow(Mesh *pm) {
 	w0_(m,IM1,k,j,(ie+i+1)) = tde_.vx1_inj;
 	w0_(m,IM2,k,j,(ie+i+1)) = tde_.vx2_inj;
 	w0_(m,IM3,k,j,(ie+i+1)) = tde_.vx3_inj;
-	printf("i:%d, local density:%g, temp:%g, ein:%g\n", ie+i+1, w0_(m,IDN,k,j,(ie+i+1)), w0_(m,IEN,k,j,(ie+i+1))/w0_(m,IDN,k,j,(ie+i+1))/(g_gamma-1.0), w0_(m,IEN,k,j,(ie+i+1)));
+	//printf("i:%d, local density:%g, temp:%g, ein:%g\n", ie+i+1, w0_(m,IDN,k,j,(ie+i+1)), w0_(m,IEN,k,j,(ie+i+1))/w0_(m,IDN,k,j,(ie+i+1))/(g_gamma-1.0), w0_(m,IEN,k,j,(ie+i+1)));
       }else{
 	//ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_, rho,pgas,uu1,uu2,uu3);
 	w0_(m,IDN,k,j,(ie+i+1)) = w0_(m,IDN,k,j,ie);

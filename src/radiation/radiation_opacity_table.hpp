@@ -27,7 +27,8 @@ struct OpacityTable {
 };
   
 struct OpacityData{
-  OpacityTable table;
+  OpacityTable table_host; //this is the table live on host
+  Kokkos::View<OpacityTable*> table_device;
   
   // Singleton instance
   static OpacityData& GetInstance() {

@@ -63,12 +63,14 @@ void UserOpacityFunction(// density and density scale
                      // output sigma
                      Real& sigma_a, Real& sigma_s, Real& sigma_p){
   
-  const auto& tab = OpacityData::GetInstance().table;
+  //const auto& tab = OpacityData::GetInstance().table;
+  //pass the device-accessible object
+  const OpacityTable tab = OpacityData::GetInstance().table_device(0);
   Real kappa_ross_tab, kappa_planck_tab;
 
-  // Real rho_test = 1.0e-10;
-  // Real temp_test = 3.4e5;
-  // InterpolateKappa(tab, rho_test, temp_test, kappa_ross_tab, kappa_planck_tab);
+  Real rho_test = 1.0e-10;
+  Real temp_test = 3.4e5;
+  InterpolateKappa(tab, rho_test, temp_test, kappa_ross_tab, kappa_planck_tab);
 
   // printf("testing for density %g and temperature %g: kappa_ross=%g, kappa_planck=%g\n",
   // 	 rho_test, temp_test, kappa_ross_tab, kappa_planck_tab);
