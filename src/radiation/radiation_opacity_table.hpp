@@ -28,7 +28,7 @@ struct OpacityTable {
   
 struct OpacityData{
   OpacityTable table_host; //this is the table live on host
-  Kokkos::View<OpacityTable*> table_device;
+  Kokkos::View<OpacityTable*> table_device; //this is the table live on device
   
   // Singleton instance
   static OpacityData& GetInstance() {
@@ -44,6 +44,11 @@ struct OpacityData{
 private:
   OpacityData() {}  // Private constructor
 };
+
+// This is to create a host-only function to access the instance of OpacityData
+inline Kokkos::View<OpacityTable*> GetDeviceOpacityTable() {
+    return OpacityData::GetInstance().table_device;
+}
 
 // Interpolation function, free-free opacity, input cgs output cgs 
 KOKKOS_INLINE_FUNCTION

@@ -120,6 +120,9 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     }
   }
 
+  //access to the device available object (instance) before launching kernel function
+  auto opacity_dev = GetDeviceOpacityTable();
+
   // compute implicit source term
   par_for("radiation_source",DevExeSpace(),0,nmb1,ks,ke,js,je,is,ie,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
@@ -166,12 +169,14 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
 		      kappa_a_, kappa_s_, kappa_p_,
 		      sigma_a, sigma_s, sigma_p);
     } else {
+      ////access to the device available object (instance) before launching kernel function
+      //auto opacity_dev = GetDeviceOpacityTable();
       UserOpacityFunction(wdn, density_scale_,
 		      tgas, temperature_scale_,
 		      length_scale_, gm1, mean_mol_weight_,
 		      power_opacity_, rosseland_coef_, planck_minus_rosseland_coef_,
 		      kappa_a_, kappa_s_, kappa_p_,
-		      sigma_a, sigma_s, sigma_p);
+		      sigma_a, sigma_s, sigma_p, opacity_dev);
     }
     Real dtcsiga = dt_*sigma_a;
     Real dtcsigs = dt_*sigma_s;

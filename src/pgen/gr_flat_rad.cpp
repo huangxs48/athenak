@@ -242,15 +242,14 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
 
   //chatGPT wrote this debugging block
-  auto dev_tab_view = OpacityData::GetInstance().table_device;
-
-  Kokkos::parallel_for("debug_opacity", 1, KOKKOS_LAMBDA(const int) {
-      OpacityTable tab = dev_tab_view(0);
+  auto opacity_dev = GetDeviceOpacityTable();   // host retrieves device view
+   
+  Kokkos::parallel_for("debug_opacity", 1, KOKKOS_LAMBDA(int) {
+      OpacityTable tab = opacity_dev(0);
       printf("GPU opacity: n_rho=%d n_temp=%d rho0=%g T0=%g\n",
-	     tab.n_rho, tab.n_temp,
-	     tab.rho_grid(0), tab.temp_grid(0));
+             tab.n_rho, tab.n_temp,
+             tab.rho_grid(0), tab.temp_grid(0));
   });
- 
   
   //-------------------------------------
 
