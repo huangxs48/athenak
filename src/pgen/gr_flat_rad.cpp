@@ -73,6 +73,9 @@ struct tde_pgen{
 // prototypes for user-defined BCs and error functions
 void FixedStreamInflow(Mesh *pm);
 
+// prototype for custom history function
+void TDEFluxes(HistoryData *pdata, Mesh *pm);
+
 //----------------------------------------------------------------------------------------
 //! \fn ProblemGenerator::UserProblem_()
 //! \brief Problem Generator for spherical tde stream problem
@@ -86,6 +89,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   // Get spin of black hole
   tde.spin = pmbp->pcoord->coord_data.bh_spin;
+  const Real r_excise = pmbp->pcoord->coord_data.rexcise;
 
   // Get excision parameters
   tde.dexcise = pmbp->pcoord->coord_data.dexcise;
@@ -125,6 +129,18 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   // set user boundary bondition, effective is diode in three directions now
   user_bcs_func = FixedStreamInflow;
+
+  // Spherical Grid for user-defined history, copied from gr_torus
+  auto &grids = spherical_grids;
+  const Real rflux = (is_radiation_enabled) ? ceil(r_excise + 1.0) : 1.0 + sqrt(1.0 - SQR(tde.spin));
+  grids.push_back(std::make_unique<SphericalGrid>(pmbp, 5, rflux)); //spherical grid level is 5 levels
+  // NOTE(@pdmullen): Enroll additional radii for flux analysis by
+  // pushing back the grids vector with additional SphericalGrid instances
+  Real rad_ox1 = 99.0;
+  grids.push_back(std::make_unique<SphericalGrid>(pmbp, 5, rad_ox1));
+  grids.push_back(std::make_unique<SphericalGrid>(pmbp, 5, 80.0));
+
+  user_hist_func = &TDEFluxes;
 
   //-------------------------------
   // load opacity table, write them into an opacitydata instance, so all devices can access to them
@@ -645,3 +661,190 @@ static void GetBoyerLindquistCoordinates(struct tde_pgen pgen,
 }
 
 }//namespace
+
+
+//----------------------------------------------------------------------------------------
+// Function for computing accretion fluxes through constant spherical KS radius surfaces, from gr_torus pgen
+
+void TDEFluxes(HistoryData *pdata, Mesh *pm) {
+  MeshBlockPack *pmbp = pm->pmb_pack;
+
+  // extract BH parameters
+  bool &flat = pmbp->pcoord->coord_data.is_minkowski;
+  Real &spin = pmbp->pcoord->coord_data.bh_spin;
+
+  // set nvars, adiabatic index, primitive array w0, and field array bcc0 if is_mhd
+  int nvars; Real gamma; bool is_mhd = false;
+  DvceArray5D<Real> w0_, bcc0_;
+  if (pmbp->phydro != nullptr) {
+    nvars = pmbp->phydro->nhydro + pmbp->phydro->nscalars;
+    gamma = pmbp->phydro->peos->eos_data.gamma;
+    w0_ = pmbp->phydro->w0;
+  } else if (pmbp->pmhd != nullptr) {
+    is_mhd = true;
+    nvars = pmbp->pmhd->nmhd + pmbp->pmhd->nscalars;
+    gamma = pmbp->pmhd->peos->eos_data.gamma;
+    w0_ = pmbp->pmhd->w0;
+    bcc0_ = pmbp->pmhd->bcc0;
+  }
+
+  // Calculate conversion for P to e if using DynGRMHD.
+  Real to_ien = 1.;
+  if (pmbp->pdyngr != nullptr) {
+    to_ien = 1.0 / (gamma - 1.);
+  }//IEN stores pressure instead of internal energy in dynamical GR
+
+  // extract grids, number of radii, number of fluxes, and history appending index
+  auto &grids = pm->pgen->spherical_grids; //this is the vector spehrical grid defined earlier
+  int nradii = grids.size();
+  int nflux = (is_mhd) ? 4 : 3;
+
+  // set number of and names of history variables for hydro or mhd
+  //  (1) mass accretion rate
+  //  (2) energy flux
+  //  (3) angular momentum flux
+  //  (4) magnetic flux (iff MHD)
+  pdata->nhist = nradii*nflux;
+  if (pdata->nhist > NHISTORY_VARIABLES) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+              << std::endl << "User history function specified pdata->nhist larger than"
+              << " NHISTORY_VARIABLES" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  for (int g=0; g<nradii; ++g) {
+    std::stringstream stream;
+    stream << std::fixed << std::setprecision(1) << grids[g]->radius;
+    std::string rad_str = stream.str();
+    pdata->label[nflux*g+0] = "mdot_" + rad_str;
+    pdata->label[nflux*g+1] = "edot_" + rad_str;
+    pdata->label[nflux*g+2] = "ldot_" + rad_str;
+    if (is_mhd) {
+      pdata->label[nflux*g+3] = "phi_" + rad_str;
+    }
+  }
+
+  // go through angles at each radii:
+  DualArray2D<Real> interpolated_bcc;  // needed for MHD
+  for (int g=0; g<nradii; ++g) {
+    // zero fluxes at this radius
+    pdata->hdata[nflux*g+0] = 0.0;
+    pdata->hdata[nflux*g+1] = 0.0;
+    pdata->hdata[nflux*g+2] = 0.0;
+    if (is_mhd) pdata->hdata[nflux*g+3] = 0.0;
+
+    // interpolate primitives (and cell-centered magnetic fields iff mhd)
+    if (is_mhd) {
+      grids[g]->InterpolateToSphere(3, bcc0_);
+      Kokkos::realloc(interpolated_bcc, grids[g]->nangles, 3);
+      Kokkos::deep_copy(interpolated_bcc, grids[g]->interp_vals);
+      interpolated_bcc.template modify<DevExeSpace>();
+      interpolated_bcc.template sync<HostMemSpace>();
+    }
+    grids[g]->InterpolateToSphere(nvars, w0_);
+
+    // compute fluxes
+    for (int n=0; n<grids[g]->nangles; ++n) {//loop over solid angle domega
+      // extract coordinate data at this angle
+      Real r = grids[g]->radius;
+      Real theta = grids[g]->polar_pos.h_view(n,0);
+      Real phi = grids[g]->polar_pos.h_view(n,1);
+      Real x1 = grids[g]->interp_coord.h_view(n,0);
+      Real x2 = grids[g]->interp_coord.h_view(n,1);
+      Real x3 = grids[g]->interp_coord.h_view(n,2);
+      Real glower[4][4], gupper[4][4];
+      ComputeMetricAndInverse(x1,x2,x3,flat,spin,glower,gupper);
+
+      // extract interpolated primitives
+      Real &int_dn = grids[g]->interp_vals.h_view(n,IDN);
+      Real &int_vx = grids[g]->interp_vals.h_view(n,IVX);
+      Real &int_vy = grids[g]->interp_vals.h_view(n,IVY);
+      Real &int_vz = grids[g]->interp_vals.h_view(n,IVZ);
+      Real int_ie = grids[g]->interp_vals.h_view(n,IEN)*to_ien;
+
+      // extract interpolated field components (iff is_mhd)
+      Real int_bx = 0.0, int_by = 0.0, int_bz = 0.0;
+      if (is_mhd) {
+        int_bx = interpolated_bcc.h_view(n,IBX);
+        int_by = interpolated_bcc.h_view(n,IBY);
+        int_bz = interpolated_bcc.h_view(n,IBZ);
+      }
+
+      // Compute interpolated u^\mu in CKS
+      // convert to full four-velocity
+      Real q = glower[1][1]*int_vx*int_vx + 2.0*glower[1][2]*int_vx*int_vy +
+               2.0*glower[1][3]*int_vx*int_vz + glower[2][2]*int_vy*int_vy +
+               2.0*glower[2][3]*int_vy*int_vz + glower[3][3]*int_vz*int_vz;
+      Real alpha = sqrt(-1.0/gupper[0][0]);
+      Real lor = sqrt(1.0 + q);
+      Real u0 = lor/alpha;
+      Real u1 = int_vx - alpha * lor * gupper[0][1];
+      Real u2 = int_vy - alpha * lor * gupper[0][2];
+      Real u3 = int_vz - alpha * lor * gupper[0][3];
+
+      // Lower vector indices
+      Real u_0 = glower[0][0]*u0 + glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
+      Real u_1 = glower[1][0]*u0 + glower[1][1]*u1 + glower[1][2]*u2 + glower[1][3]*u3;
+      Real u_2 = glower[2][0]*u0 + glower[2][1]*u1 + glower[2][2]*u2 + glower[2][3]*u3;
+      Real u_3 = glower[3][0]*u0 + glower[3][1]*u1 + glower[3][2]*u2 + glower[3][3]*u3;
+
+      // Calculate 4-magnetic field (returns zero if not MHD), fluid frame
+      Real b0 = u_1*int_bx + u_2*int_by + u_3*int_bz;
+      Real b1 = (int_bx + b0 * u1) / u0;
+      Real b2 = (int_by + b0 * u2) / u0;
+      Real b3 = (int_bz + b0 * u3) / u0;
+
+      // compute b_\mu in CKS and b_sq (returns zero if not MHD)
+      Real b_0 = glower[0][0]*b0 + glower[0][1]*b1 + glower[0][2]*b2 + glower[0][3]*b3;
+      Real b_1 = glower[1][0]*b0 + glower[1][1]*b1 + glower[1][2]*b2 + glower[1][3]*b3;
+      Real b_2 = glower[2][0]*b0 + glower[2][1]*b1 + glower[2][2]*b2 + glower[2][3]*b3;
+      Real b_3 = glower[3][0]*b0 + glower[3][1]*b1 + glower[3][2]*b2 + glower[3][3]*b3;
+      Real b_sq = b0*b_0 + b1*b_1 + b2*b_2 + b3*b_3;
+
+      // Transform CKS 4-velocity and 4-magnetic field to spherical KS
+      Real a2 = SQR(spin);
+      Real rad2 = SQR(x1)+SQR(x2)+SQR(x3);
+      Real r2 = SQR(r);
+      Real sth = sin(theta);
+      Real sph = sin(phi);
+      Real cph = cos(phi);
+      Real drdx = r*x1/(2.0*r2 - rad2 + a2);
+      Real drdy = r*x2/(2.0*r2 - rad2 + a2);
+      Real drdz = (r*x3 + a2*x3/r)/(2.0*r2-rad2+a2);
+      // contravariant r component of 4-velocity
+      Real ur  = drdx *u1 + drdy *u2 + drdz *u3;
+      // contravariant r component of 4-magnetic field (returns zero if not MHD)
+      Real br  = drdx *b1 + drdy *b2 + drdz *b3;
+      // covariant phi component of 4-velocity
+      Real u_ph = (-r*sph-spin*cph)*sth*u_1 + (r*cph-spin*sph)*sth*u_2;
+      // covariant phi component of 4-magnetic field (returns zero if not MHD)
+      Real b_ph = (-r*sph-spin*cph)*sth*b_1 + (r*cph-spin*sph)*sth*b_2;
+
+      // integration params
+      Real &domega = grids[g]->solid_angles.h_view(n);
+      Real sqrtmdet = (r2+SQR(spin*cos(theta)));
+
+      // compute mass flux
+      pdata->hdata[nflux*g+0] += -1.0*int_dn*ur*sqrtmdet*domega; //Newt: - rho * u_r * r * domega
+
+      // compute energy flux
+      Real t1_0 = (int_dn + gamma*int_ie + b_sq)*ur*u_0 - br*b_0;
+      pdata->hdata[nflux*g+1] += -1.0*t1_0*sqrtmdet*domega;
+
+      // compute angular momentum flux
+      Real t1_3 = (int_dn + gamma*int_ie + b_sq)*ur*u_ph - br*b_ph;
+      pdata->hdata[nflux*g+2] += t1_3*sqrtmdet*domega;
+
+      // compute magnetic flux
+      if (is_mhd) {
+        pdata->hdata[nflux*g+3] += 0.5*fabs(br*u0 - b0*ur)*sqrtmdet*domega;
+      }
+    }
+  }
+
+  // fill rest of the_array with zeros, if nhist < NHISTORY_VARIABLES
+  for (int n=pdata->nhist; n<NHISTORY_VARIABLES; ++n) {
+    pdata->hdata[n] = 0.0;
+  }
+
+  return;
+}
