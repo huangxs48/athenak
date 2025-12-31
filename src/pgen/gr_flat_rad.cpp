@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <iostream>
+#include <iomanip>
 
 #include "athena.hpp"
 #include "parameter_input.hpp"
@@ -55,6 +57,8 @@ struct tde_pgen{
   Real vx1_inj, vx2_inj, vx3_inj;
   Real r_inj_thresh_coarse;
   Real local_dens, local_temp;
+
+  Real hst_radii_1, hst_radii_2;
 
   //opacity table
   int n_rho;
@@ -109,6 +113,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   tde.local_dens = pin->GetReal("problem", "local_dens");
   tde.local_temp = pin->GetReal("problem", "local_temp");
   tde.r_inj_thresh_coarse = pin->GetReal("problem", "r_inj_thresh_coarse");
+  tde.hst_radii_1 = pin->GetOrAddReal("problem", "hst_radii_1", 100.0);
+  tde.hst_radii_2 = pin->GetOrAddReal("problem", "hst_radii_2", 80.0);
 
   //if radiation
   if (pmbp->prad != nullptr){
@@ -133,14 +139,14 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   // Spherical Grid for user-defined history, copied from gr_torus
   auto &grids = spherical_grids;
   const Real rflux = (is_radiation_enabled) ? ceil(r_excise + 1.0) : 1.0 + sqrt(1.0 - SQR(tde.spin));
-  grids.push_back(std::make_unique<SphericalGrid>(pmbp, 5, rflux)); //spherical grid level is 5 levels
+  int sph_grid_level = 6;
+  grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, rflux)); //spherical grid level is 5 levels
   // NOTE(@pdmullen): Enroll additional radii for flux analysis by
   // pushing back the grids vector with additional SphericalGrid instances
-  Real rad_ox1 = 99.0;
-  grids.push_back(std::make_unique<SphericalGrid>(pmbp, 5, rad_ox1));
-  grids.push_back(std::make_unique<SphericalGrid>(pmbp, 5, 80.0));
+  grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, tde.hst_radii_1));
+  grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, tde.hst_radii_2));
 
-  user_hist_func = &TDEFluxes;
+  user_hist_func = TDEFluxes;
 
   //-------------------------------
   // load opacity table, write them into an opacitydata instance, so all devices can access to them
@@ -266,6 +272,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
              tab.n_rho, tab.n_temp,
              tab.rho_grid(0), tab.temp_grid(0));
   });
+  Kokkos::fence("after debug_opacity");
   
   //-------------------------------------
 
@@ -676,16 +683,20 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
   // set nvars, adiabatic index, primitive array w0, and field array bcc0 if is_mhd
   int nvars; Real gamma; bool is_mhd = false;
   DvceArray5D<Real> w0_, bcc0_;
+  //debug
+  DvceArray5D<Real> u0_;
   if (pmbp->phydro != nullptr) {
     nvars = pmbp->phydro->nhydro + pmbp->phydro->nscalars;
     gamma = pmbp->phydro->peos->eos_data.gamma;
     w0_ = pmbp->phydro->w0;
+    u0_ = pmbp->phydro->u0;
   } else if (pmbp->pmhd != nullptr) {
     is_mhd = true;
     nvars = pmbp->pmhd->nmhd + pmbp->pmhd->nscalars;
     gamma = pmbp->pmhd->peos->eos_data.gamma;
     w0_ = pmbp->pmhd->w0;
     bcc0_ = pmbp->pmhd->bcc0;
+    u0_ = pmbp->pmhd->u0;
   }
 
   // Calculate conversion for P to e if using DynGRMHD.
@@ -740,6 +751,8 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
       interpolated_bcc.template modify<DevExeSpace>();
       interpolated_bcc.template sync<HostMemSpace>();
     }
+    // std::cout<<" "<<std::endl;
+    // std::cout<<"in pgen history, calling interpolation: "<<std::endl;
     grids[g]->InterpolateToSphere(nvars, w0_);
 
     // compute fluxes
@@ -823,8 +836,8 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
       Real &domega = grids[g]->solid_angles.h_view(n);
       Real sqrtmdet = (r2+SQR(spin*cos(theta)));
 
-      // compute mass flux
-      pdata->hdata[nflux*g+0] += -1.0*int_dn*ur*sqrtmdet*domega; //Newt: - rho * u_r * r * domega
+      // compute area/mass flux
+      pdata->hdata[nflux*g+0] += sqrtmdet * domega; //-1.0*int_dn*ur*sqrtmdet*domega; //Newt: - rho * u_r * r * domega
 
       // compute energy flux
       Real t1_0 = (int_dn + gamma*int_ie + b_sq)*ur*u_0 - br*b_0;
@@ -838,6 +851,12 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
       if (is_mhd) {
         pdata->hdata[nflux*g+3] += 0.5*fabs(br*u0 - b0*ur)*sqrtmdet*domega;
       }
+
+      // //debug, check primitive/conservative
+      // if (g==1 and int_dn>0.0){
+      // 	std::cout<<"g="<<g<<", n="<<n<<", r="<<r<<", theta="<<theta<<", phi="<<phi<<", interp_x1="<<x1<<", interp_x2="<<x2<<", interp_x3="<<x3<<", int_dn="<<int_dn<<", int_vx="<<int_vx<<", int_vy="<<int_vy<<", int_vz="<<int_vz<<", ur="<<ur<<", u1="<<u1<<", u2="<<u2<<", u3="<<u3<<std::endl;
+      // }//debug
+      
     }
   }
 

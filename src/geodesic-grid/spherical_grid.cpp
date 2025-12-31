@@ -266,6 +266,21 @@ void SphericalGrid::InterpolateToSphere(int vs, int ve, DvceArray5D<Real>& val) 
     }
   });
 
+  //debug
+  int count_angles_h = 0;
+  Kokkos::parallel_reduce(
+    "count_offrank_angles",
+    Kokkos::RangePolicy<DevExeSpace>(0, nang1),
+    KOKKOS_LAMBDA(const int n, int &lsum) {
+      if (iindcs.d_view(n,0) == -1) lsum += 1;
+    },
+    count_angles_h
+  );
+  Kokkos::fence();
+  std::cout << "off-rank angle count: " << count_angles_h << std::endl;
+  //end debug
+
+  
   // sync dual arrays
   interp_vals.template modify<DevExeSpace>();
   interp_vals.template sync<HostMemSpace>();
