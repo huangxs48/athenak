@@ -58,6 +58,10 @@ struct tde_pgen{
   Real r_inj_thresh_coarse;
   Real local_dens, local_temp;
 
+  //stream density structure
+  int uniform_stream; //flag for uniform density
+  Real h_stream; //scale height
+
   Real hst_radii_1, hst_radii_2;
 
   //opacity table
@@ -115,6 +119,9 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   tde.r_inj_thresh_coarse = pin->GetReal("problem", "r_inj_thresh_coarse");
   tde.hst_radii_1 = pin->GetOrAddReal("problem", "hst_radii_1", 100.0);
   tde.hst_radii_2 = pin->GetOrAddReal("problem", "hst_radii_2", 80.0);
+  //stream structure
+  tde.uniform_stream = pin->GetOrAddInteger("problem", "uniform_stream", 1);
+  tde.h_stream = pin->GetOrAddReal("problem", "h_stream", 0.01);
 
   //if radiation
   if (pmbp->prad != nullptr){
@@ -480,7 +487,14 @@ void FixedStreamInflow(Mesh *pm) {
       Real r_now = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
       Real dr_now = std::sqrt(SQR(x1v - tde_.x1_inj) + SQR(x2v - tde_.x2_inj) + SQR(x3v - tde_.x3_inj));
       if (dr_now <= tde_.r_inj_thresh_coarse){
-	printf("x1v:%g, x2v:%g, x3v:%g, x1inj:%g, x2inj:%g, x3inj:%g, rnow:%g, dr_now:%g\n", x1v, x2v, x3v, tde_.x1_inj, tde_.x2_inj, tde_.x3_inj, r_now, dr_now);
+	
+	//check density flag
+	Real dens_now = tde_.local_dens;
+	if (tde_.uniform_stream==0){
+	  dens_now = tde_.local_dens * std::exp(-std::pow(dr_now/tde_.h_stream, 2)/2.0);
+	}
+	printf("x1v:%g, x2v:%g, x3v:%g, x1inj:%g, x2inj:%g, x3inj:%g, rnow:%g, dr_now:%g, dens_now:%g\n", x1v, x2v, x3v, tde_.x1_inj, tde_.x2_inj, tde_.x3_inj, r_now, dr_now, dens_now);
+	
 	w0_(m,IDN,k,j,(ie+i+1)) = tde_.local_dens;
 	w0_(m,IEN,k,j,(ie+i+1)) = tde_.local_dens * tde_.local_temp * (g_gamma-1.0);
 	w0_(m,IM1,k,j,(ie+i+1)) = tde_.vx1_inj;
