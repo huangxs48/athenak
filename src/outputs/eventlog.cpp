@@ -90,7 +90,7 @@ void EventLogOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     // Write header, if it has not been written already
     if (!(header_written)) {
       std::fprintf(pfile,"# Athena event counter data\n");
-      std::fprintf(pfile,"#  cycle eos_dfloor eos_efloor eos_tfloor eos_vceil");
+      std::fprintf(pfile,"#  cycle time eos_dfloor eos_efloor eos_tfloor eos_vceil");
       std::fprintf(pfile," eos_fail c2p_it fofc");
       std::fprintf(pfile,"\n");  // terminate line
       header_written = true;
@@ -99,11 +99,12 @@ void EventLogOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     // write event counters
     if (!(no_output)) {
       std::fprintf(pfile, "%8d", pm->ncycle);
-      std::fprintf(pfile, " %8d", pm->ecounter.neos_dfloor);
-      std::fprintf(pfile, " %8d", pm->ecounter.neos_efloor);
-      std::fprintf(pfile, " %8d", pm->ecounter.neos_tfloor);
-      std::fprintf(pfile, " %8d", pm->ecounter.neos_vceil);
-      std::fprintf(pfile, " %8d", pm->ecounter.neos_fail);
+      std::fprintf(pfile, "%8f", pm->time);
+      std::fprintf(pfile, " %10d", pm->ecounter.neos_dfloor);
+      std::fprintf(pfile, " %10d", pm->ecounter.neos_efloor);
+      std::fprintf(pfile, " %10d", pm->ecounter.neos_tfloor);
+      std::fprintf(pfile, " %10d", pm->ecounter.neos_vceil);
+      std::fprintf(pfile, " %10d", pm->ecounter.neos_fail);
       std::fprintf(pfile, " %6d", pm->ecounter.maxit_c2p);
       std::fprintf(pfile, " %8d", pm->ecounter.nfofc);
       std::fprintf(pfile,"\n"); // terminate line
