@@ -196,7 +196,7 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
     pmy_pack->pmesh->ecounter.neos_vceil  += nceilv_;
     pmy_pack->pmesh->ecounter.neos_fail   += nfail_;
     pmy_pack->pmesh->ecounter.maxit_c2p = maxit_;
-    pmy_pack->pmesh->ecounter.ncells = ncells_;
+    pmy_pack->pmesh->ecounter.ncells += ncells_;
   }
 
   return;
