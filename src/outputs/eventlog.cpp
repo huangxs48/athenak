@@ -42,6 +42,7 @@ void EventLogOutput::LoadOutputData(Mesh *pm) {
   int* pfail   = &(pm->ecounter.neos_fail);
   int* pmaxit  = &(pm->ecounter.maxit_c2p);
   int* pfofc   = &(pm->ecounter.nfofc);
+  int* pncells = &(pm->ecounter.ncells);
   MPI_Allreduce(MPI_IN_PLACE, pdfloor, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(MPI_IN_PLACE, pefloor, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(MPI_IN_PLACE, ptfloor, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -49,6 +50,7 @@ void EventLogOutput::LoadOutputData(Mesh *pm) {
   MPI_Allreduce(MPI_IN_PLACE, pfail,   1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(MPI_IN_PLACE, pmaxit,  1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
   MPI_Allreduce(MPI_IN_PLACE, pfofc,   1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Allreduce(MPI_IN_PLACE, pncells,   1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 #endif
 
   // check if there is any data to be written
@@ -59,7 +61,7 @@ void EventLogOutput::LoadOutputData(Mesh *pm) {
       pm->ecounter.neos_vceil  > 0 ||
       pm->ecounter.neos_fail   > 0 ||
       pm->ecounter.nfofc > 0 ||
-      pm->ecounter.maxit_c2p > 0) {
+      pm->ecounter.maxit_c2p > 0 ) { //do not add the totall cell number here, always positive
     no_output=false;
   }
 }
@@ -91,7 +93,7 @@ void EventLogOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     if (!(header_written)) {
       std::fprintf(pfile,"# Athena event counter data\n");
       std::fprintf(pfile,"#  cycle time eos_dfloor eos_efloor eos_tfloor eos_vceil");
-      std::fprintf(pfile," eos_fail c2p_it fofc");
+      std::fprintf(pfile," eos_fail c2p_it fofc ncells");
       std::fprintf(pfile,"\n");  // terminate line
       header_written = true;
     }
@@ -99,7 +101,7 @@ void EventLogOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     // write event counters
     if (!(no_output)) {
       std::fprintf(pfile, "%8d", pm->ncycle);
-      std::fprintf(pfile, "%8f", pm->time);
+      std::fprintf(pfile, " %8.4f", pm->time);
       std::fprintf(pfile, " %10d", pm->ecounter.neos_dfloor);
       std::fprintf(pfile, " %10d", pm->ecounter.neos_efloor);
       std::fprintf(pfile, " %10d", pm->ecounter.neos_tfloor);
@@ -107,10 +109,14 @@ void EventLogOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
       std::fprintf(pfile, " %10d", pm->ecounter.neos_fail);
       std::fprintf(pfile, " %6d", pm->ecounter.maxit_c2p);
       std::fprintf(pfile, " %8d", pm->ecounter.nfofc);
+      std::fprintf(pfile, " %10d", pm->ecounter.ncells);
       std::fprintf(pfile,"\n"); // terminate line
     }
     std::fclose(pfile);
   }
+
+  //debug
+  std::cout<<"ncycle: "<<pm->ncycle<<", n_dfloor: "<< pm->ecounter.neos_dfloor<<", n_efloor: " << pm->ecounter.neos_efloor<<", n_cells: "<<pm->ecounter.ncells<<std::endl;
 
   // reset counters
   pm->ecounter.neos_dfloor = 0;
@@ -120,6 +126,7 @@ void EventLogOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   pm->ecounter.neos_fail = 0;
   pm->ecounter.maxit_c2p = 0;
   pm->ecounter.nfofc = 0;
+  pm->ecounter.ncells = 0;
 
   // increment output time, clean up
   if (out_params.last_time < 0.0) {
