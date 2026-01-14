@@ -106,14 +106,14 @@ void EventLogOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     if (!(no_output)) {
       std::fprintf(pfile, "%8d", pm->ncycle);
       std::fprintf(pfile, " %8.4f", pm->time);
-      std::fprintf(pfile, " %12d", pm->ecounter.neos_dfloor);
-      std::fprintf(pfile, " %12d", pm->ecounter.neos_efloor);
+      std::fprintf(pfile, " %12lld", pm->ecounter.neos_dfloor);
+      std::fprintf(pfile, " %12lld", pm->ecounter.neos_efloor);
       std::fprintf(pfile, " %10d", pm->ecounter.neos_tfloor);
       std::fprintf(pfile, " %10d", pm->ecounter.neos_vceil);
       std::fprintf(pfile, " %10d", pm->ecounter.neos_fail);
       std::fprintf(pfile, " %6d", pm->ecounter.maxit_c2p);
       std::fprintf(pfile, " %8d", pm->ecounter.nfofc);
-      std::fprintf(pfile, " %12d", pm->ecounter.ncells);
+      std::fprintf(pfile, " %12lld", pm->ecounter.ncells);
       std::fprintf(pfile,"\n"); // terminate line
     }
     std::fclose(pfile);
