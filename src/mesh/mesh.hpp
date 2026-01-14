@@ -67,8 +67,9 @@ struct LogicalLocation {
 //! \struct EventCounters
 //! \brief stores various counters used as diagnostics throughout the code
 
-struct EventCounters {
-  int nfofc, neos_dfloor, neos_efloor, neos_tfloor, neos_vceil, neos_fail, maxit_c2p, ncells;
+struct EventCounters { //xiaoshan: change this to long integers
+  int nfofc,neos_tfloor, neos_vceil, neos_fail, maxit_c2p;//  neos_dfloor, neos_efloor, ncells;
+  int64_t neos_dfloor, neos_efloor, ncells;
   EventCounters() : nfofc(0), neos_dfloor(0), neos_efloor(0), neos_tfloor(0),
                     neos_vceil(0), neos_fail(0), maxit_c2p(0), ncells(0) {}
 };

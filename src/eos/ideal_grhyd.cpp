@@ -64,9 +64,11 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
   const int nkji = (ku - kl + 1)*nji;
   const int nmkji = nmb*nkji;
 
-  int nfloord_=0, nfloore_=0, nceilv_=0, nfail_=0, maxit_=0, ncells_=0;
+  //int nfloord_=0, nfloore_=0, nceilv_=0, nfail_=0, maxit_=0, ncells_=0;
+  int nceilv_=0, nfail_=0, maxit_=0 ;
+  int64_t nfloord_=0, nfloore_=0, ncells_=0;
   Kokkos::parallel_reduce("grhyd_c2p",Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
-			  KOKKOS_LAMBDA(const int &idx, int &sumd, int &sume, int &sumv, int &sumf, int &max_it, int&sumnc) {
+			  KOKKOS_LAMBDA(const int &idx, int64_t &sumd, int64_t &sume, int &sumv, int &sumf, int &max_it, int64_t &sumnc) {
     int m = (idx)/nkji;
     int k = (idx - m*nkji)/nji;
     int j = (idx - m*nkji - k*nji)/ni;
@@ -184,8 +186,8 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
         prim(m,n,k,j,i) = cons(m,n,k,j,i)/u.d;
       }
     }
-  }, Kokkos::Sum<int>(nfloord_), Kokkos::Sum<int>(nfloore_), Kokkos::Sum<int>(nceilv_),
-			  Kokkos::Sum<int>(nfail_), Kokkos::Max<int>(maxit_), Kokkos::Sum<int>(ncells_));
+  }, Kokkos::Sum<int64_t>(nfloord_), Kokkos::Sum<int64_t>(nfloore_), Kokkos::Sum<int>(nceilv_),
+			  Kokkos::Sum<int>(nfail_), Kokkos::Max<int>(maxit_), Kokkos::Sum<int64_t>(ncells_));
 
   // store appropriate counters
   if (only_testfloors) {

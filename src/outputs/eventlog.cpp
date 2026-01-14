@@ -35,22 +35,26 @@ EventLogOutput::EventLogOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
 void EventLogOutput::LoadOutputData(Mesh *pm) {
 #if MPI_PARALLEL_ENABLED
   // perform in-place sum or max over all MPI ranks, depending on counter
-  int* pdfloor = &(pm->ecounter.neos_dfloor);
-  int* pefloor = &(pm->ecounter.neos_efloor);
+  //int* pdfloor = &(pm->ecounter.neos_dfloor);
+  //int* pefloor = &(pm->ecounter.neos_efloor);
   int* ptfloor = &(pm->ecounter.neos_tfloor);
   int* pvceil  = &(pm->ecounter.neos_vceil);
   int* pfail   = &(pm->ecounter.neos_fail);
   int* pmaxit  = &(pm->ecounter.maxit_c2p);
   int* pfofc   = &(pm->ecounter.nfofc);
-  int* pncells = &(pm->ecounter.ncells);
-  MPI_Allreduce(MPI_IN_PLACE, pdfloor, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-  MPI_Allreduce(MPI_IN_PLACE, pefloor, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  int_64t* pdfloor = &(pm->ecounter.neos_dfloor);
+  int_64t* pefloor = &(pm->ecounter.neos_efloor);
+  int_64t* pncells = &(pm->ecounter.ncells);
+  //MPI_Allreduce(MPI_IN_PLACE, pdfloor, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  //MPI_Allreduce(MPI_IN_PLACE, pefloor, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(MPI_IN_PLACE, ptfloor, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(MPI_IN_PLACE, pvceil,  1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(MPI_IN_PLACE, pfail,   1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(MPI_IN_PLACE, pmaxit,  1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
   MPI_Allreduce(MPI_IN_PLACE, pfofc,   1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-  MPI_Allreduce(MPI_IN_PLACE, pncells,   1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Allreduce(MPI_IN_PLACE, pdfloor, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Allreduce(MPI_IN_PLACE, pefloor, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Allreduce(MPI_IN_PLACE, pncells,   1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
 #endif
 
   // check if there is any data to be written
@@ -102,14 +106,14 @@ void EventLogOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     if (!(no_output)) {
       std::fprintf(pfile, "%8d", pm->ncycle);
       std::fprintf(pfile, " %8.4f", pm->time);
-      std::fprintf(pfile, " %10d", pm->ecounter.neos_dfloor);
-      std::fprintf(pfile, " %10d", pm->ecounter.neos_efloor);
+      std::fprintf(pfile, " %12d", pm->ecounter.neos_dfloor);
+      std::fprintf(pfile, " %12d", pm->ecounter.neos_efloor);
       std::fprintf(pfile, " %10d", pm->ecounter.neos_tfloor);
       std::fprintf(pfile, " %10d", pm->ecounter.neos_vceil);
       std::fprintf(pfile, " %10d", pm->ecounter.neos_fail);
       std::fprintf(pfile, " %6d", pm->ecounter.maxit_c2p);
       std::fprintf(pfile, " %8d", pm->ecounter.nfofc);
-      std::fprintf(pfile, " %10d", pm->ecounter.ncells);
+      std::fprintf(pfile, " %12d", pm->ecounter.ncells);
       std::fprintf(pfile,"\n"); // terminate line
     }
     std::fclose(pfile);
