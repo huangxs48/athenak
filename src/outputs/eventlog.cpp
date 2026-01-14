@@ -42,9 +42,9 @@ void EventLogOutput::LoadOutputData(Mesh *pm) {
   int* pfail   = &(pm->ecounter.neos_fail);
   int* pmaxit  = &(pm->ecounter.maxit_c2p);
   int* pfofc   = &(pm->ecounter.nfofc);
-  int_64t* pdfloor = &(pm->ecounter.neos_dfloor);
-  int_64t* pefloor = &(pm->ecounter.neos_efloor);
-  int_64t* pncells = &(pm->ecounter.ncells);
+  int64_t* pdfloor = &(pm->ecounter.neos_dfloor);
+  int64_t* pefloor = &(pm->ecounter.neos_efloor);
+  int64_t* pncells = &(pm->ecounter.ncells);
   //MPI_Allreduce(MPI_IN_PLACE, pdfloor, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   //MPI_Allreduce(MPI_IN_PLACE, pefloor, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(MPI_IN_PLACE, ptfloor, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
