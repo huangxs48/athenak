@@ -24,6 +24,7 @@
 #include "coordinates/cell_locations.hpp"
 #include "mesh/mesh.hpp"
 #include "outputs.hpp"
+#include "hydro/hydro.hpp"
 
 //----------------------------------------------------------------------------------------
 // Constructor: also calls BaseTypeOutput base class constructor
@@ -144,6 +145,7 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   char *data = new char[nb_mbs*data_size];
   float *single_data = new float[cells];
 
+  //std::cout << "JUST BEFORE OUTPUT: prim(0,5,19,127,118) = "  << pm->pmb_pack->phydro->w0(0,5,19,127,118) << std::endl;
   // Loop over MeshBlocks
   for (int m=0; m<nout_mbs; ++m) {
     char *pdata=&(data[m*data_size]);
@@ -311,6 +313,7 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   }
   pin->SetInteger(out_params.block_name, "file_number", out_params.file_number);
   pin->SetReal(out_params.block_name, "last_time", out_params.last_time);
+  //std::cout << "END OF OUTPUT: prim(0,5,19,127,118) = "  << pm->pmb_pack->phydro->w0(0,5,19,127,118) << std::endl;
 
   return;
 }

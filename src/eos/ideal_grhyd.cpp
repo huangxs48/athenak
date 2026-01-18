@@ -41,6 +41,15 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
                               const bool only_testfloors,
                               const int il, const int iu, const int jl, const int ju,
                               const int kl, const int ku) {
+
+  // //xiaoshan, also debug
+  // static int call_counter = 0;
+  // call_counter++;
+  // std::cout << "\n=== ConsToPrim call #" << call_counter 
+  //           << ", only_testfloors=" << only_testfloors 
+  //           << " ===" << std::endl;
+  // std::cout << "ENTRY: prim(0,5,19,127,118) = " << prim(0,5,19,127,118) << std::endl;
+  
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int &is = indcs.is, &js = indcs.js, &ks = indcs.ks;
   auto &size = pmy_pack->pmb->mb_size;
@@ -170,7 +179,11 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
       prim(m,IVY,k,j,i) = w.vy;
       prim(m,IVZ,k,j,i) = w.vz;
       prim(m,IEN,k,j,i) = w.e;
-
+      
+      // if (efloor_used){
+      // 	std::cout<<"energy floor triggered at x1="<<x1v<<", x2="<<x2v<<", x3="<<x3v<<", prim(IDN)="<<w.d<<std::endl;
+      // }
+      
       // reset conserved variables if floor, ceiling, failure, or excision encountered
       if (dfloor_used || efloor_used || vceiling_used || c2p_failure || excised) {
         SingleP2C_IdealGRHyd(glower, gupper, w, eos.gamma, u);
@@ -181,14 +194,76 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
         cons(m,IEN,k,j,i) = u.e;
       }
 
-      // convert scalars (if any)
+      //xiaoshan: change for debug, manually set scalars to track where floor is triggered
+      //xiaoshan: this cons2prim function is called four times during a normal RHD task list (vl2)
+      //radiation source, stage 1; hydro c2p stage 1; radiatin source, stage 2; hydro c2p stage2;
+      //by not including the else statement, any of the four steps caught a density floor will force
+      //the scalare becomes non-zero (1.0), because there is no resetting.
+      //uncomment the else statement will make the result only show last step if it is negative
+      //not fully understand why...
+      // for (int n=nhyd; n<(nhyd+1); ++n) {
+
+      // 	if (efloor_used){
+      // 	  prim(m,n,k,j,i) = 1.0;
+      // 	  cons(m,n,k,j,i) = 1.0*u.d;
+	
+      // 	}//else{
+      // 	//  prim(m,n,k,j,i) = 0.0;
+      // 	//  cons(m,n,k,j,i) = 0.0*u.d;
+      // 	//}
+	
+      // if (m==0 && n==5 && k==19 && j==127 && i==118){
+      // 	std::cout<<std::endl;
+      // 	std::cout<<"in setting scalar, found efloor="<<efloor_used<<" for m="<<m<<" n="<<n<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,n,k,j,i)<<std::endl;}
+	
+      // }//first scalar
+
+      // //is it fine to skip this?
+      // //convert scalars (if any)
+      // for (int n=nhyd; n<(nhyd+nscal); ++n) {
+      //   prim(m,n,k,j,i) = cons(m,n,k,j,i)/u.d;
+      // 	if (m==0 && n==5 && k==19 && j==127 && i==118){
+      // 	std::cout<<"after conversion, found efloor="<<efloor_used<<" for m="<<m<<" n="<<n<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,n,k,j,i)<<std::endl;}
+      // }
+
+
+      // Convert scalars (if any) and track floor usage
       for (int n=nhyd; n<(nhyd+nscal); ++n) {
+	if (n == nhyd) {
+	  // First scalar tracks energy floor
+	  if (efloor_used) {
+            prim(m,n,k,j,i) = 999.0;
+            cons(m,n,k,j,i) = 999.0 * u.d;
+	    // if (m==0 && n==5 && k==19 && j==127 && i==118){
+	    //   std::cout<<std::endl;
+	    //   std::cout<<"in setting scalar, nhyd="<<nhyd<<", found efloor="<<efloor_used<<" for m="<<m<<" n="<<n<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,n,k,j,i)<<std::endl;}
+	  // } else {
+          //   prim(m,n,k,j,i) = 0.0;
+          //   cons(m,n,k,j,i) = 0.0;
+	  }
+	} else {
+        // Other scalars: normal conversion
         prim(m,n,k,j,i) = cons(m,n,k,j,i)/u.d;
-      }
+	}
+      }//END N LOOP
+
+      // if (m==0 && k==19 && j==127 && i==118){
+      // 	std::cout<<std::endl;
+      // 	std::cout<<"end of the constoprim, found efloor="<<efloor_used<<" for m="<<m<<" n="<<5<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,5,k,j,i)<<std::endl;}
+
     }
   }, Kokkos::Sum<int64_t>(nfloord_), Kokkos::Sum<int64_t>(nfloore_), Kokkos::Sum<int>(nceilv_),
 			  Kokkos::Sum<int>(nfail_), Kokkos::Max<int>(maxit_), Kokkos::Sum<int64_t>(ncells_));
 
+//   //debug
+// // Check immediately after kernel
+// std::cout << "After parallel_reduce: prim(0,5,19,127,118) = " 
+//           << prim(0,5,19,127,118) << std::endl;
+// std::cout << "After parallel_reduce: cons(0,5,19,127,118) = " 
+//           << cons(0,5,19,127,118) << std::endl;
+
+return;
+  
   // store appropriate counters
   if (only_testfloors) {
     pmy_pack->pmesh->ecounter.nfofc += nfloord_;
@@ -201,6 +276,8 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
     pmy_pack->pmesh->ecounter.ncells += ncells_;
   }
 
+
+  
   return;
 }
 

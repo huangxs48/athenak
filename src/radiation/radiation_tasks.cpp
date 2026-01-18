@@ -228,6 +228,7 @@ TaskStatus Radiation::RecvFlux(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to apply source terms to radaition field
 
 TaskStatus Radiation::RadSrcTerms(Driver *pdrive, int stage) {
+  //std::cout<<"rad task, RadSrcTerms, stage="<<stage<<std::endl;
   Real beta_dt = (pdrive->beta[stage-1])*(pmy_pack->pmesh->dt);
 
   // Add physics source terms (must be computed from primitives)
