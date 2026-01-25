@@ -194,75 +194,97 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
         cons(m,IEN,k,j,i) = u.e;
       }
 
-      //xiaoshan: change for debug, manually set scalars to track where floor is triggered
-      //xiaoshan: this cons2prim function is called four times during a normal RHD task list (vl2)
-      //radiation source, stage 1; hydro c2p stage 1; radiatin source, stage 2; hydro c2p stage2;
-      //by not including the else statement, any of the four steps caught a density floor will force
-      //the scalare becomes non-zero (1.0), because there is no resetting.
-      //uncomment the else statement will make the result only show last step if it is negative
-      //not fully understand why...
-      // for (int n=nhyd; n<(nhyd+1); ++n) {
-
-      // 	if (efloor_used){
-      // 	  prim(m,n,k,j,i) = 1.0;
-      // 	  cons(m,n,k,j,i) = 1.0*u.d;
+      if (eos_data.debug_eos_statistic==1){
+	//xiaoshan: change for debug, manually set scalars to track where floor is triggered
+	//xiaoshan: this cons2prim function is called four times during a normal RHD task list (vl2)
+	//radiation source, stage 1; hydro c2p stage 1; radiatin source, stage 2; hydro c2p stage2;
+	//current accumulative implementation shows that how many times in total the floor is triggered
+	//because there is no resetting.
+	//setting prim(m,n,k,j,i) to zero every time before checking efloor_used will cause primitive
+	//always to be zero
+	//not fully understand why this is the case
 	
-      // 	}//else{
-      // 	//  prim(m,n,k,j,i) = 0.0;
-      // 	//  cons(m,n,k,j,i) = 0.0*u.d;
-      // 	//}
-	
-      // if (m==0 && n==5 && k==19 && j==127 && i==118){
-      // 	std::cout<<std::endl;
-      // 	std::cout<<"in setting scalar, found efloor="<<efloor_used<<" for m="<<m<<" n="<<n<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,n,k,j,i)<<std::endl;}
-	
-      // }//first scalar
+	// Convert scalars (if any) and track floor usage
+	//sanity check if total number of scalars equals to five + one
+	if (nscal != 6) std::cerr<<"Expected at least six scalars for: (0) total counter (1) density floor (2) energy floor (3) velcoity ceiling (4) cons2prim failure (5) excised cell, but current nscalar="<<nscal<<std::endl;
 
-      // //is it fine to skip this?
-      // //convert scalars (if any)
-      // for (int n=nhyd; n<(nhyd+nscal); ++n) {
-      //   prim(m,n,k,j,i) = cons(m,n,k,j,i)/u.d;
-      // 	if (m==0 && n==5 && k==19 && j==127 && i==118){
-      // 	std::cout<<"after conversion, found efloor="<<efloor_used<<" for m="<<m<<" n="<<n<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,n,k,j,i)<<std::endl;}
-      // }
-
-
-      // Convert scalars (if any) and track floor usage
-      for (int n=nhyd; n<(nhyd+nscal); ++n) {
-	if (n == nhyd) {
-	  // First scalar tracks energy floor
-	  if (efloor_used) {
-            prim(m,n,k,j,i) = 999.0;
-            cons(m,n,k,j,i) = 999.0 * u.d;
-	    // if (m==0 && n==5 && k==19 && j==127 && i==118){
-	    //   std::cout<<std::endl;
-	    //   std::cout<<"in setting scalar, nhyd="<<nhyd<<", found efloor="<<efloor_used<<" for m="<<m<<" n="<<n<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,n,k,j,i)<<std::endl;}
-	  // } else {
-          //   prim(m,n,k,j,i) = 0.0;
-          //   cons(m,n,k,j,i) = 0.0;
-	  }
-	} else {
-        // Other scalars: normal conversion
-        prim(m,n,k,j,i) = cons(m,n,k,j,i)/u.d;
+	for (int n=nhyd; n<(nhyd+nscal); ++n) {
+	  // reset the scalars
+	  //prim(m,n,k,j,i) = 0.0;
+	  cons(m,n,k,j,i) = 0.0 * u.d;
 	}
-      }//END N LOOP
+
+	// First scalar is total counter
+	prim(m,nhyd+0,k,j,i) += 1.0;
+	cons(m,nhyd+0,k,j,i) = prim(m,nhyd+0,k,j,i) * u.d;
+	
+	// Second scalar tracks density floor
+	if (dfloor_used) {
+	  if (eos_data.debug_fill_zero==1){
+	    prim(m,nhyd+1,k,j,i) = 0.0;
+	  }else{
+	    prim(m,nhyd+1,k,j,i) += 1.0;
+	  }
+	  cons(m,nhyd+1,k,j,i) = prim(m,nhyd+1,k,j,i) * u.d;
+	}
+
+	// Third scalar tracks density floor
+	if (efloor_used) {
+	  if (eos_data.debug_fill_zero==1){
+	    prim(m,nhyd+2,k,j,i) = 0.0;
+	  }else{
+	    prim(m,nhyd+2,k,j,i) += 1.0;
+	  }
+	  cons(m,nhyd+2,k,j,i) = prim(m,nhyd+2,k,j,i) * u.d;
+	  // std::cout<<std::endl;
+	  // std::cout<<"in setting scalar, nhyd="<<nhyd<<", found efloor="<<efloor_used<<" for m="<<m<<" n="<<n<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,n,k,j,i)<<std::endl;
+	}
+	
+	// Fourth scalar tracks density floor
+	if (vceiling_used) {
+	  if (eos_data.debug_fill_zero==1){
+	    prim(m,nhyd+3,k,j,i) = 0.0;
+	  }else{
+	    prim(m,nhyd+3,k,j,i) += 1.0;
+	  }
+	  cons(m,nhyd+3,k,j,i) = prim(m,nhyd+3,k,j,i) * u.d;
+	}
+	
+	// Fifth scalar tracks density floor
+	if (c2p_failure) {
+	  if (eos_data.debug_fill_zero==1){
+	    prim(m,nhyd+4,k,j,i) = 0.0;
+	  }else{
+	    prim(m,nhyd+4,k,j,i) += 1.0;
+	  }
+	  cons(m,nhyd+4,k,j,i) = prim(m,nhyd+4,k,j,i) * u.d;
+	}
+	
+	// Sixth scalar tracks density floor
+	if (excised) {
+	  if (eos_data.debug_fill_zero==1){
+	    prim(m,nhyd+5,k,j,i) = 0.0;
+	  }else{
+	    prim(m,nhyd+5,k,j,i) += 1.0;
+	  }
+	  cons(m,nhyd+5,k,j,i) = prim(m,nhyd+5,k,j,i) * u.d;
+	  
+	}
+	
+      }else{//normal non-debugging mode
+	for (int n=nhyd; n<(nhyd+nscal); ++n) {
+	  prim(m,n,k,j,i) = cons(m,n,k,j,i)/u.d;
+	}
+      }
 
       // if (m==0 && k==19 && j==127 && i==118){
       // 	std::cout<<std::endl;
       // 	std::cout<<"end of the constoprim, found efloor="<<efloor_used<<" for m="<<m<<" n="<<5<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,5,k,j,i)<<std::endl;}
 
-    }
+
+    }//NOT TEST_FLOOR_ONLY
   }, Kokkos::Sum<int64_t>(nfloord_), Kokkos::Sum<int64_t>(nfloore_), Kokkos::Sum<int>(nceilv_),
 			  Kokkos::Sum<int>(nfail_), Kokkos::Max<int>(maxit_), Kokkos::Sum<int64_t>(ncells_));
-
-//   //debug
-// // Check immediately after kernel
-// std::cout << "After parallel_reduce: prim(0,5,19,127,118) = " 
-//           << prim(0,5,19,127,118) << std::endl;
-// std::cout << "After parallel_reduce: cons(0,5,19,127,118) = " 
-//           << cons(0,5,19,127,118) << std::endl;
-
-return;
   
   // store appropriate counters
   if (only_testfloors) {

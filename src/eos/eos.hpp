@@ -32,6 +32,9 @@ struct EOS_Data {
   Real dfloor, pfloor, tfloor, sfloor;  // density, pressure, temperature, entropy floors
   Real gamma_max;    // ceiling on Lorentz factor in SR/GR
 
+  int debug_eos_statistic; //xiaoshan: flag to check if want to account for EOS flags using scalar
+  int debug_fill_zero; //xiaoshan: flag to fill zero to passaive scalars
+
   // IDEAL GAS PRESSURE: converts primitive variable (either internal energy density e
   // or temperature e/d) into pressure.
   KOKKOS_INLINE_FUNCTION

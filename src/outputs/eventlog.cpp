@@ -58,7 +58,7 @@ void EventLogOutput::LoadOutputData(Mesh *pm) {
 #endif
 
   // check if there is any data to be written
-  no_output = true;
+  no_output = false;//true;
   if (pm->ecounter.neos_dfloor > 0 ||
       pm->ecounter.neos_efloor > 0 ||
       pm->ecounter.neos_tfloor > 0 ||
