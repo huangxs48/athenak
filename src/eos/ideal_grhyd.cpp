@@ -50,6 +50,10 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
   //           << " ===" << std::endl;
   // std::cout << "ENTRY: prim(0,5,19,127,118) = " << prim(0,5,19,127,118) << std::endl;
   
+  // debug flags
+  int debug_eos_statistic = eos_data.debug_eos_statistic;
+  int debug_fill_zero = eos_data.debug_fill_zero;
+
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int &is = indcs.is, &js = indcs.js, &ks = indcs.ks;
   auto &size = pmy_pack->pmb->mb_size;
@@ -194,7 +198,7 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
         cons(m,IEN,k,j,i) = u.e;
       }
 
-      if (eos_data.debug_eos_statistic==1){
+      if (debug_eos_statistic==1){
 	//xiaoshan: change for debug, manually set scalars to track where floor is triggered
 	//xiaoshan: this cons2prim function is called four times during a normal RHD task list (vl2)
 	//radiation source, stage 1; hydro c2p stage 1; radiatin source, stage 2; hydro c2p stage2;
@@ -206,7 +210,7 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
 	
 	// Convert scalars (if any) and track floor usage
 	//sanity check if total number of scalars equals to five + one
-	if (nscal != 6) std::cerr<<"Expected at least six scalars for: (0) total counter (1) density floor (2) energy floor (3) velcoity ceiling (4) cons2prim failure (5) excised cell, but current nscalar="<<nscal<<std::endl;
+	if (nscal < 6) printf("Expected at least six scalars for: (0) total counter (1) density floor (2) energy floor (3) velcoity ceiling (4) cons2prim failure (5) excised cell, but current nscalar=%d\n", nscal);
 
 	for (int n=nhyd; n<(nhyd+nscal); ++n) {
 	  // reset the scalars
@@ -220,7 +224,7 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
 	
 	// Second scalar tracks density floor
 	if (dfloor_used) {
-	  if (eos_data.debug_fill_zero==1){
+	  if (debug_fill_zero==1){
 	    prim(m,nhyd+1,k,j,i) = 0.0;
 	  }else{
 	    prim(m,nhyd+1,k,j,i) += 1.0;
@@ -230,7 +234,7 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
 
 	// Third scalar tracks density floor
 	if (efloor_used) {
-	  if (eos_data.debug_fill_zero==1){
+	  if (debug_fill_zero==1){
 	    prim(m,nhyd+2,k,j,i) = 0.0;
 	  }else{
 	    prim(m,nhyd+2,k,j,i) += 1.0;
@@ -239,10 +243,11 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
 	  // std::cout<<std::endl;
 	  // std::cout<<"in setting scalar, nhyd="<<nhyd<<", found efloor="<<efloor_used<<" for m="<<m<<" n="<<n<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,n,k,j,i)<<std::endl;
 	}
-	
+
+        	
 	// Fourth scalar tracks density floor
 	if (vceiling_used) {
-	  if (eos_data.debug_fill_zero==1){
+	  if (debug_fill_zero==1){
 	    prim(m,nhyd+3,k,j,i) = 0.0;
 	  }else{
 	    prim(m,nhyd+3,k,j,i) += 1.0;
@@ -250,9 +255,9 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
 	  cons(m,nhyd+3,k,j,i) = prim(m,nhyd+3,k,j,i) * u.d;
 	}
 	
-	// Fifth scalar tracks density floor
+	// Fifth scalar tracks c2p fail
 	if (c2p_failure) {
-	  if (eos_data.debug_fill_zero==1){
+	  if (debug_fill_zero==1){
 	    prim(m,nhyd+4,k,j,i) = 0.0;
 	  }else{
 	    prim(m,nhyd+4,k,j,i) += 1.0;
@@ -260,9 +265,9 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
 	  cons(m,nhyd+4,k,j,i) = prim(m,nhyd+4,k,j,i) * u.d;
 	}
 	
-	// Sixth scalar tracks density floor
+	// Sixth scalar tracks excision
 	if (excised) {
-	  if (eos_data.debug_fill_zero==1){
+	  if (debug_fill_zero==1){
 	    prim(m,nhyd+5,k,j,i) = 0.0;
 	  }else{
 	    prim(m,nhyd+5,k,j,i) += 1.0;
@@ -270,6 +275,7 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
 	  cons(m,nhyd+5,k,j,i) = prim(m,nhyd+5,k,j,i) * u.d;
 	  
 	}
+	
 	
       }else{//normal non-debugging mode
 	for (int n=nhyd; n<(nhyd+nscal); ++n) {

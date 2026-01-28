@@ -120,7 +120,7 @@ void EventLogOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   }
 
   //debug
-  std::cout<<"ncycle: "<<pm->ncycle<<", n_dfloor: "<< pm->ecounter.neos_dfloor<<", n_efloor: " << pm->ecounter.neos_efloor<<", n_cells: "<<pm->ecounter.ncells<<std::endl;
+  //std::cout<<"ncycle: "<<pm->ncycle<<", n_dfloor: "<< pm->ecounter.neos_dfloor<<", n_efloor: " << pm->ecounter.neos_efloor<<", n_cells: "<<pm->ecounter.ncells<<std::endl;
 
   // reset counters
   pm->ecounter.neos_dfloor = 0;

@@ -502,7 +502,7 @@ void FixedStreamInflow(Mesh *pm) {
 	if (tde_.uniform_stream==0){
 	  dens_now = tde_.local_dens * std::exp(-std::pow(dr_now/tde_.h_stream, 2)/2.0);
 	}
-	//printf("x1v:%g, x2v:%g, x3v:%g, x1inj:%g, x2inj:%g, x3inj:%g, rnow:%g, dr_now:%g, dens_now:%g\n", x1v, x2v, x3v, tde_.x1_inj, tde_.x2_inj, tde_.x3_inj, r_now, dr_now, dens_now);
+	printf("x1v:%g, x2v:%g, x3v:%g, x1inj:%g, x2inj:%g, x3inj:%g, rnow:%g, dr_now:%g, dens_now:%g\n", x1v, x2v, x3v, tde_.x1_inj, tde_.x2_inj, tde_.x3_inj, r_now, dr_now, dens_now);
 	
 	w0_(m,IDN,k,j,(ie+i+1)) = tde_.local_dens;
 	w0_(m,IEN,k,j,(ie+i+1)) = tde_.local_dens * tde_.local_temp * (g_gamma-1.0);
