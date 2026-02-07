@@ -77,6 +77,7 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
   const int nkji = (ku - kl + 1)*nji;
   const int nmkji = nmb*nkji;
 
+  std::cout<<"excision: "<<use_excise<<std::endl;
   //int nfloord_=0, nfloore_=0, nceilv_=0, nfail_=0, maxit_=0, ncells_=0;
   if (debug_eos_statistic==1){
     if (nscal < 6){
