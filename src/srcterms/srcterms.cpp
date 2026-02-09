@@ -40,6 +40,7 @@ SourceTerms::SourceTerms(std::string block, MeshBlockPack *pp, ParameterInput *p
   ism_cooling = pin->GetOrAddBoolean(block, "ism_cooling", false);
   rel_cooling = pin->GetOrAddBoolean(block, "rel_cooling", false);
   rad_beam = pin->GetOrAddBoolean(block, "rad_beam", false);
+  pseudo_newtonian = pin->GetOrAddBoolean(block, "pseudo_newtonian", false);
 
   // (1) read data for (constant) gravitational acceleration
   if (const_accel) {
@@ -94,6 +95,7 @@ void SourceTerms::ApplySrcTerms(const DvceArray5D<Real> &w0, const EOS_Data &eos
   if (const_accel) ConstantAccel(w0, eos_data,  bdt, u0);
   if (ism_cooling) ISMCooling(w0, eos_data, bdt, u0);
   if (rel_cooling) RelCooling(w0, eos_data, bdt, u0);
+  if (pseudo_newtonian) PseudoNewtonian(w0, eos_data, bdt, u0);
   return;
 }
 
@@ -310,6 +312,75 @@ void SourceTerms::BeamSource(DvceArray5D<Real> &i0, const Real bdt) {
         i0(m,n,k,j,i) += n0*n_0*dii_dt_*bdt;
       }
     }
+  });
+
+  return;
+}
+
+
+//----------------------------------------------------------------------------------------
+//! \fn SourceTerms::PseudoNewtonian
+//! \brief Add approximated GR potential as Tejeda & Rosswog 2013
+//! NOTE source terms must be computed using primitive (w0) and NOT conserved (u0) vars
+
+void SourceTerms::PseudoNewtonian(const DvceArray5D<Real> &w0, const EOS_Data &eos_data,
+				  const Real bdt, DvceArray5D<Real> &u0) {
+
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int nmb1 = pmy_pack->nmb_thispack - 1;
+  auto &size = pmy_pack->pmb->mb_size;
+
+  const Real r_excise = pmy_pack->pcoord->coord_data.rexcise;
+  par_for("generalnewtonian", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+  KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+
+    Real &x1min = size.d_view(m).x1min;
+    Real &x1max = size.d_view(m).x1max;
+    Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+
+    Real &x2min = size.d_view(m).x2min;
+    Real &x2max = size.d_view(m).x2max;
+    Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+
+    Real &x3min = size.d_view(m).x3min;
+    Real &x3max = size.d_view(m).x3max;
+    Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+    
+    Real dx = w0(m,IVX,k,j,i);
+    Real dy = w0(m,IVY,k,j,i);
+    Real dz = w0(m,IVZ,k,j,i);
+    Real x = x1v;
+    Real y = x2v;
+    Real z = x3v;
+    Real r = std::sqrt(SQR(x) + SQR(y) + SQR(z));
+
+    if (r > r_excise){
+      Real gm = 1.0;
+      Real rho = w0(m,IDN,k,j,i);
+      
+      //coefficients of acceleration, r in unit of rg
+      Real coef1 = -gm * pow(1.0 - 2.0/r, 2) / pow(r, 3);
+      Real coef2 = 2.0*(x*dx + y*dy + z*dz)/(pow(r, 2)*(r - 2.0));
+      Real coef3 = - 3.0 * (1.0/pow(r, 5)) * (SQR(y*dz - z*dy) + SQR(z*dx - x*dz) + SQR(x*dy-y*dx));
+
+      //accelerations
+      Real ax = coef1 * x + coef2 * dx + coef3 * x;
+      Real ay = coef1 * y + coef2 * dy + coef3 * y;
+      Real az = coef1 * z + coef2 * dz + coef3 * z;
+      
+      u0(m,IM1,k,j,i) += bdt * rho * ax;
+      u0(m,IM2,k,j,i) += bdt * rho * ay;
+      u0(m,IM3,k,j,i) += bdt * rho * az;
+    
+      if (eos_data.is_ideal){
+	u0(m,IEN,k,j,i) += bdt * (rho * ax * dx + rho * ay * dy + rho * az * dz );
+      }//ideal eos
+
+    }
+    
   });
 
   return;

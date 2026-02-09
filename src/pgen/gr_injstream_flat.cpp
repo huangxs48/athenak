@@ -147,7 +147,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   user_bcs_func = FixedStreamInflow;
 
   // set user source term function
-  user_srcs_func = GeneralNewtonianPotential;
+  //user_srcs_func = GeneralNewtonianPotential;
 
   // Spherical Grid for user-defined history, copied from gr_torus
   auto &grids = spherical_grids;
@@ -978,8 +978,7 @@ void GeneralNewtonianPotential(Mesh* pm, const Real dt){
       //u0_(m,IM2,k,j,i) += dt * rho * ay;
       //u0_(m,IM3,k,j,i) += dt * rho * az;
 
-    }
-
+    } 
   });
 
 
