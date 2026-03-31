@@ -121,7 +121,10 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
   }
 
   //access to the device available object (instance) before launching kernel function
-  auto opacity_dev = GetDeviceOpacityTable();
+  Kokkos::View<OpacityTable*> opacity_dev;
+  if (user_opacity) {
+    opacity_dev = GetDeviceOpacityTable();
+  }
 
   // compute implicit source term
   par_for("radiation_source",DevExeSpace(),0,nmb1,ks,ke,js,je,is,ie,
