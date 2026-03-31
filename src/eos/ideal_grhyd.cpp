@@ -80,7 +80,7 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
   //int nfloord_=0, nfloore_=0, nceilv_=0, nfail_=0, maxit_=0, ncells_=0;
   if (debug_eos_statistic==1){
     if (nscal < 6){
-        printf("Expected at least six scalars for: (0) total counter (1) density floor (2) energy floor (3) velcoity ceiling (4) cons2prim failure (5) excised cell, but current nscalar=%d\n", nscal);
+        std::cerr<<"Expected at least six scalars for: (0) total counter (1) density floor (2) energy floor (3) velcoity ceiling (4) cons2prim failure (5) excised cell, but current nscalar="<<nscal<<std::endl;
     }  
   }
   
