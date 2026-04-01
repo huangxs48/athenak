@@ -121,15 +121,18 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
   }
 
   //prepare for user opacity functions
-  
-  //Kokkos::View<OpacityTable*> opacity_dev;
-  int opacity_n_rho = 0, opacity_n_temp = 0;
-  Kokkos::View<Real*> opacity_rho_grid, opacity_temp_grid;
-  Kokkos::View<Real**> opacity_kappa_ross, opacity_kappa_planck;
 
-  //access to the device available object (instance) before launching kernel function
+  int opacity_n_rho = 0, opacity_n_temp = 0;
+  // Claude made this change to adapt Aurora
+  // Initialize to size-1 dummy views so the SYCL kernel never captures null pointers.
+  // Intel Level Zero can page-fault on null USM pointers in kernel arguments even if
+  // the code path that uses them is never executed at runtime.
+  Kokkos::View<Real*>  opacity_rho_grid ("dummy_rho",  1);
+  Kokkos::View<Real*>  opacity_temp_grid("dummy_temp", 1);
+  Kokkos::View<Real**> opacity_kappa_ross  ("dummy_ross",   1, 1);
+  Kokkos::View<Real**> opacity_kappa_planck("dummy_planck", 1, 1);
+
   if (user_opacity) {
-      //opacity_dev = GetDeviceOpacityTable();
       auto& opacity_data = OpacityData::GetInstance();
       opacity_n_rho        = opacity_data.n_rho;
       opacity_n_temp       = opacity_data.n_temp;
