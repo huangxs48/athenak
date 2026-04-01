@@ -61,6 +61,16 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
   int &nscal = pmy_pack->phydro->nscalars;
   int &nmb = pmy_pack->nmb_thispack;
   auto &fofc_ = pmy_pack->phydro->fofc;
+
+  // Temporary per-cell flag array for debug scalar tracking (only allocated when needed).
+  // Stores 5 booleans (dfloor, efloor, vceiling, c2p_failure, excised) per cell so the
+  // parallel_reduce kernel stays lightweight; processed in a separate par_for below.
+  // Index layout: c2p_flags(flag_idx, m, k, j, i)  where flag_idx = 0..4
+  DvceArray5D<bool> c2p_flags;
+  if (debug_eos_statistic==1 && !only_testfloors) {
+    c2p_flags = DvceArray5D<bool>("c2p_flags", 5,
+                  fofc_.extent(0), fofc_.extent(1), fofc_.extent(2), fofc_.extent(3));
+  }
   auto eos = eos_data;
   Real gm1 = eos_data.gamma - 1.0;
 
@@ -87,7 +97,7 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
   int nceilv_=0, nfail_=0, maxit_=0 ;
   int64_t nfloord_=0, nfloore_=0, ncells_=0;
   Kokkos::parallel_reduce("grhyd_c2p",Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
-			  KOKKOS_LAMBDA(const int &idx, int64_t &sumd, int64_t &sume, int &sumv, int &sumf, int &max_it, int64_t &sumnc) {
+        KOKKOS_LAMBDA(const int &idx, int64_t &sumd, int64_t &sume, int &sumv, int &sumf, int &max_it, int64_t &sumnc) {
     int m = (idx)/nkji;
     int k = (idx - m*nkji)/nji;
     int j = (idx - m*nkji - k*nji)/ni;
@@ -191,7 +201,7 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
       prim(m,IEN,k,j,i) = w.e;
       
       // if (efloor_used){
-      // 	std::cout<<"energy floor triggered at x1="<<x1v<<", x2="<<x2v<<", x3="<<x3v<<", prim(IDN)="<<w.d<<std::endl;
+      //  std::cout<<"energy floor triggered at x1="<<x1v<<", x2="<<x2v<<", x3="<<x3v<<", prim(IDN)="<<w.d<<std::endl;
       // }
       
       // reset conserved variables if floor, ceiling, failure, or excision encountered
@@ -204,102 +214,82 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
         cons(m,IEN,k,j,i) = u.e;
       }
 
-      if (debug_eos_statistic==1){
-	//xiaoshan: change for debug, manually set scalars to track where floor is triggered
-	//xiaoshan: this cons2prim function is called four times during a normal RHD task list (vl2)
-	//radiation source, stage 1; hydro c2p stage 1; radiatin source, stage 2; hydro c2p stage2;
-	//current accumulative implementation shows that how many times in total the floor is triggered
-	//because there is no resetting.
-	//setting prim(m,n,k,j,i) to zero every time before checking efloor_used will cause primitive
-	//always to be zero
-	//not fully understand why this is the case
-	
-	// Convert scalars (if any) and track floor usage
-	////sanity check if total number of scalars equals to five + one
-	//if (nscal < 6){ 
-	//  printf("Expected at least six scalars for: (0) total counter (1) density floor (2) energy floor (3) velcoity ceiling (4) cons2prim failure (5) excised cell, but current nscalar=%d\n", nscal);
-	//}
-
-	for (int n=nhyd; n<(nhyd+nscal); ++n) {
-	  // reset the scalars
-	  //prim(m,n,k,j,i) = 0.0;
-	  cons(m,n,k,j,i) = 0.0 * u.d;
-	}
-
-	// First scalar is total counter
-	prim(m,nhyd+0,k,j,i) += 1.0;
-	cons(m,nhyd+0,k,j,i) = prim(m,nhyd+0,k,j,i) * u.d;
-	
-	// Second scalar tracks density floor
-	if (dfloor_used) {
-	  if (debug_fill_zero==1){
-	    prim(m,nhyd+1,k,j,i) = 0.0;
-	  }else{
-	    prim(m,nhyd+1,k,j,i) += 1.0;
-	  }
-	  cons(m,nhyd+1,k,j,i) = prim(m,nhyd+1,k,j,i) * u.d;
-	}
-
-	// Third scalar tracks density floor
-	if (efloor_used) {
-	  if (debug_fill_zero==1){
-	    prim(m,nhyd+2,k,j,i) = 0.0;
-	  }else{
-	    prim(m,nhyd+2,k,j,i) += 1.0;
-	  }
-	  cons(m,nhyd+2,k,j,i) = prim(m,nhyd+2,k,j,i) * u.d;
-	  // std::cout<<std::endl;
-	  // std::cout<<"in setting scalar, nhyd="<<nhyd<<", found efloor="<<efloor_used<<" for m="<<m<<" n="<<n<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,n,k,j,i)<<std::endl;
-	}
-
-        	
-	// Fourth scalar tracks density floor
-	if (vceiling_used) {
-	  if (debug_fill_zero==1){
-	    prim(m,nhyd+3,k,j,i) = 0.0;
-	  }else{
-	    prim(m,nhyd+3,k,j,i) += 1.0;
-	  }
-	  cons(m,nhyd+3,k,j,i) = prim(m,nhyd+3,k,j,i) * u.d;
-	}
-	
-	// Fifth scalar tracks c2p fail
-	if (c2p_failure) {
-	  if (debug_fill_zero==1){
-	    prim(m,nhyd+4,k,j,i) = 0.0;
-	  }else{
-	    prim(m,nhyd+4,k,j,i) += 1.0;
-	  }
-	  cons(m,nhyd+4,k,j,i) = prim(m,nhyd+4,k,j,i) * u.d;
-	}
-	
-	// Sixth scalar tracks excision
-	if (excised) {
-	  if (debug_fill_zero==1){
-	    prim(m,nhyd+5,k,j,i) = 0.0;
-	  }else{
-	    prim(m,nhyd+5,k,j,i) += 1.0;
-	  }
-	  cons(m,nhyd+5,k,j,i) = prim(m,nhyd+5,k,j,i) * u.d;
-	  
-	}
-	
-	
-      }else{//normal non-debugging mode
-	for (int n=nhyd; n<(nhyd+nscal); ++n) {
-	  prim(m,n,k,j,i) = cons(m,n,k,j,i)/u.d;
-	}
+      // Convert scalars (normal path, always executed)
+      for (int n=nhyd; n<(nhyd+nscal); ++n) {
+        prim(m,n,k,j,i) = cons(m,n,k,j,i)/u.d;
+      }
+      // Store per-cell floor flags for debug scalar accumulation in a separate par_for.
+      // Keeping this minimal avoids register pressure in the parallel_reduce kernel.
+      if (debug_eos_statistic==1) {
+        c2p_flags(0,m,k,j,i) = dfloor_used;
+        c2p_flags(1,m,k,j,i) = efloor_used;
+        c2p_flags(2,m,k,j,i) = vceiling_used;
+        c2p_flags(3,m,k,j,i) = c2p_failure;
+        c2p_flags(4,m,k,j,i) = excised;
       }
 
       // if (m==0 && k==19 && j==127 && i==118){
-      // 	std::cout<<std::endl;
-      // 	std::cout<<"end of the constoprim, found efloor="<<efloor_used<<" for m="<<m<<" n="<<5<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,5,k,j,i)<<std::endl;}
+      //  std::cout<<std::endl;
+      //  std::cout<<"end of the constoprim, found efloor="<<efloor_used<<" for m="<<m<<" n="<<5<<" k="<<k<<" j="<<j<<" i="<<i<<" u.d="<<u.d<<" prim(n+1)="<<prim(m,5,k,j,i)<<std::endl;}
 
 
     }//NOT TEST_FLOOR_ONLY
   }, Kokkos::Sum<int64_t>(nfloord_), Kokkos::Sum<int64_t>(nfloore_), Kokkos::Sum<int>(nceilv_),
-			  Kokkos::Sum<int>(nfail_), Kokkos::Max<int>(maxit_), Kokkos::Sum<int64_t>(ncells_));
+        Kokkos::Sum<int>(nfail_), Kokkos::Max<int>(maxit_), Kokkos::Sum<int64_t>(ncells_));
   
+  // Debug scalar accumulation: runs as a separate kernel so the parallel_reduce above
+  // stays lightweight (avoids SYCL work-group size limit on Intel PVC GPUs).
+  if (debug_eos_statistic==1 && !only_testfloors) {
+    par_for("c2p_debug_scalars",DevExeSpace(),0,nmb-1,kl,ku,jl,ju,il,iu,
+    KOKKOS_LAMBDA(int m, int k, int j, int i) {
+      Real den = cons(m,IDN,k,j,i);
+
+      // Zero all scalar cons entries
+      for (int n=nhyd; n<(nhyd+nscal); ++n) {
+        cons(m,n,k,j,i) = 0.0;
+      }
+
+      // Scalar 0: total c2p call counter (always increments)
+      prim(m,nhyd+0,k,j,i) += 1.0;
+      cons(m,nhyd+0,k,j,i) = prim(m,nhyd+0,k,j,i) * den;
+
+      // Scalar 1: density floor
+      if (c2p_flags(0,m,k,j,i)) {
+        if (debug_fill_zero==1) { prim(m,nhyd+1,k,j,i) = 0.0; }
+        else                    { prim(m,nhyd+1,k,j,i) += 1.0; }
+        cons(m,nhyd+1,k,j,i) = prim(m,nhyd+1,k,j,i) * den;
+      }
+
+      // Scalar 2: energy floor
+      if (c2p_flags(1,m,k,j,i)) {
+        if (debug_fill_zero==1) { prim(m,nhyd+2,k,j,i) = 0.0; }
+        else                    { prim(m,nhyd+2,k,j,i) += 1.0; }
+        cons(m,nhyd+2,k,j,i) = prim(m,nhyd+2,k,j,i) * den;
+      }
+
+      // Scalar 3: velocity ceiling
+      if (c2p_flags(2,m,k,j,i)) {
+        if (debug_fill_zero==1) { prim(m,nhyd+3,k,j,i) = 0.0; }
+        else                    { prim(m,nhyd+3,k,j,i) += 1.0; }
+        cons(m,nhyd+3,k,j,i) = prim(m,nhyd+3,k,j,i) * den;
+      }
+
+      // Scalar 4: c2p failure
+      if (c2p_flags(3,m,k,j,i)) {
+        if (debug_fill_zero==1) { prim(m,nhyd+4,k,j,i) = 0.0; }
+        else                    { prim(m,nhyd+4,k,j,i) += 1.0; }
+        cons(m,nhyd+4,k,j,i) = prim(m,nhyd+4,k,j,i) * den;
+      }
+
+      // Scalar 5: excised cell
+      if (c2p_flags(4,m,k,j,i)) {
+        if (debug_fill_zero==1) { prim(m,nhyd+5,k,j,i) = 0.0; }
+        else                    { prim(m,nhyd+5,k,j,i) += 1.0; }
+        cons(m,nhyd+5,k,j,i) = prim(m,nhyd+5,k,j,i) * den;
+      }
+    });
+  }
+
   // store appropriate counters
   if (only_testfloors) {
     pmy_pack->pmesh->ecounter.nfofc += nfloord_;

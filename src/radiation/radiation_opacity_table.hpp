@@ -14,7 +14,20 @@
 
 //----------------------------------------------------------------------------------------
 
-struct OpacityTable {
+// struct OpacityTable {
+//   // Size of table
+//   int n_rho;
+//   int n_temp;
+
+//   // Tabulated opacity? store in a Kokkos::View
+//   Kokkos::View<Real*> rho_grid;
+//   Kokkos::View<Real*> temp_grid;
+//   Kokkos::View<Real**> kappa_ross;
+//   Kokkos::View<Real**> kappa_planck;
+// };
+  
+struct OpacityData{
+
   // Size of table
   int n_rho;
   int n_temp;
@@ -24,18 +37,14 @@ struct OpacityTable {
   Kokkos::View<Real*> temp_grid;
   Kokkos::View<Real**> kappa_ross;
   Kokkos::View<Real**> kappa_planck;
-};
-  
-struct OpacityData{
-  OpacityTable table_host; //this is the table live on host
-  Kokkos::View<OpacityTable*> table_device; //this is the table live on device
+
+  // OpacityTable table_host; //this is the table live on host
+  // Kokkos::View<OpacityTable*> table_device; //this is the table live on device
   
   // Singleton instance
   static OpacityData& GetInstance() {
-    //static OpacityData instance;
-    //return instance;
-    
-    //chatGPT suggested rewrite as a pointer, so it will not be destructed
+
+    //write it as a pointer instace of actual instance, so it will not be destructed
     //this seem to avoid the error of some array is destructed after Kokkos::finalize()
     static OpacityData *instance = new OpacityData();
     return *instance;
@@ -45,10 +54,6 @@ private:
   OpacityData() {}  // Private constructor
 };
 
-// This is to create a host-only function to access the instance of OpacityData
-inline Kokkos::View<OpacityTable*> GetDeviceOpacityTable() {
-    return OpacityData::GetInstance().table_device;
-}
 
 // Interpolation function, free-free opacity, input cgs output cgs 
 KOKKOS_INLINE_FUNCTION
@@ -96,30 +101,37 @@ Real kappa_ff_ross(Real temp, Real rho){
 }
 
 
-// Interpolation function, read in an opacity table instance, 
+// Interpolation function, directly read views instead of OpacityData structure
 KOKKOS_INLINE_FUNCTION
-void InterpolateKappa(const OpacityTable& tab, Real rho, Real tgas, Real &kappa_ross, Real &kappa_planck){
+void InterpolateKappa(int n_rho, int n_temp,
+                      const Kokkos::View<Real*>& rho_grid,
+                      const Kokkos::View<Real*>& temp_grid,
+                      const Kokkos::View<Real**>& kappa_ross_tab,
+                      const Kokkos::View<Real**>& kappa_planck_tab,
+                      Real rho, Real tgas, Real &kappa_ross, Real &kappa_planck){
   //std::cout<<"InterpolateKappa called!"<<std::endl;
 
   // // quick check the readings
   // for (int i=90; i<100; ++i){
-  //   std::cout<<"tab.kappa_ross(30, "<<i<<") = "<< tab.kappa_ross(30,i)<<", tab.kappa_planck(30, "<<i<<")="<< tab.kappa_planck(30,i)<<std::endl;
+  //   std::cout<<"kappa_ross_rab(30, "<<i<<") = "<< kappa_ross_rab(30,i)<<", kappa_planck_tab(30, "<<i<<")="<< kappa_planck_tab(30,i)<<std::endl;
   // }
 
-  int n_temp = tab.n_temp;
-  int n_rho = tab.n_rho;
+  //int n_temp = tab.n_temp;
+  //int n_rho = tab.n_rho;
 
   //STEP1: find index of temperature and density range
   //index searching segment in rho grid
   int nrho1 = 0;
   int nrho2 = 0;
 
-  while((nrho2 < n_rho-1) && (rho > tab.rho_grid(nrho2)) ){
+  //while((nrho2 < n_rho-1) && (rho > tab.rho_grid(nrho2)) ){
+  while((nrho2 < n_rho-1) && (rho > rho_grid(nrho2)) ){
     nrho1 = nrho2;
     nrho2++;
   }
   //if hits the end of table, set two index equal
-  if((rho > tab.rho_grid(nrho2)) && (nrho2==n_rho-1)){
+  //if((rho > tab.rho_grid(nrho2)) && (nrho2==n_rho-1)){
+  if((rho > rho_grid(nrho2)) && (nrho2==n_rho-1)){
     nrho1=nrho2;
   }
 
@@ -127,30 +139,43 @@ void InterpolateKappa(const OpacityTable& tab, Real rho, Real tgas, Real &kappa_
   //index searching segments in temperature grid
   int nt1 = 0;
   int nt2 = 0;
-  while((tgas > tab.temp_grid(nt2)) && (nt2 < n_temp-1)){
+  //while((tgas > tab.temp_grid(nt2)) && (nt2 < n_temp-1)){
+  while((tgas > temp_grid(nt2)) && (nt2 < n_temp-1)){
     nt1 = nt2;
     nt2++;
   }
   //if hits the end of table, set two index equal
-  if(nt2==n_temp-1 && (tgas > tab.temp_grid(nt2))){
+  //if(nt2==n_temp-1 && (tgas > tab.temp_grid(nt2))){
+  if(nt2==n_temp-1 && (tgas > temp_grid(nt2))){
     nt1=nt2;
   }
 
   //STEP2: read the templated opacities, get ready for interpolation
   
-  Real kappa_t1_rho1_gray=tab.kappa_ross(nt1,nrho1);
-  Real kappa_t1_rho2_gray=tab.kappa_ross(nt1,nrho2);
-  Real kappa_t2_rho1_gray=tab.kappa_ross(nt2,nrho1);
-  Real kappa_t2_rho2_gray=tab.kappa_ross(nt2,nrho2);
+  // Real kappa_t1_rho1_gray=tab.kappa_ross(nt1,nrho1);
+  // Real kappa_t1_rho2_gray=tab.kappa_ross(nt1,nrho2);
+  // Real kappa_t2_rho1_gray=tab.kappa_ross(nt2,nrho1);
+  // Real kappa_t2_rho2_gray=tab.kappa_ross(nt2,nrho2);
 
-  Real planck_t1_rho1_gray=tab.kappa_planck(nt1,nrho1);
-  Real planck_t1_rho2_gray=tab.kappa_planck(nt1,nrho2);
-  Real planck_t2_rho1_gray=tab.kappa_planck(nt2,nrho1);
-  Real planck_t2_rho2_gray=tab.kappa_planck(nt2,nrho2);
+  // Real planck_t1_rho1_gray=tab.kappa_planck(nt1,nrho1);
+  // Real planck_t1_rho2_gray=tab.kappa_planck(nt1,nrho2);
+  // Real planck_t2_rho1_gray=tab.kappa_planck(nt2,nrho1);
+  // Real planck_t2_rho2_gray=tab.kappa_planck(nt2,nrho2);
+
+  Real kappa_t1_rho1_gray=kappa_ross_tab(nt1,nrho1);
+  Real kappa_t1_rho2_gray=kappa_ross_tab(nt1,nrho2);
+  Real kappa_t2_rho1_gray=kappa_ross_tab(nt2,nrho1);
+  Real kappa_t2_rho2_gray=kappa_ross_tab(nt2,nrho2);
+
+  Real planck_t1_rho1_gray=kappa_planck_tab(nt1,nrho1);
+  Real planck_t1_rho2_gray=kappa_planck_tab(nt1,nrho2);
+  Real planck_t2_rho1_gray=kappa_planck_tab(nt2,nrho1);
+  Real planck_t2_rho2_gray=kappa_planck_tab(nt2,nrho2);
 
   //in the case the temperature is larger than uplimit, extrapolate planck mean opacity by T^-3.5
   Real logt = log10(tgas);
-  Real logtlim_table = log10(tab.temp_grid(n_temp-1));
+  //Real logtlim_table = log10(tab.temp_grid(n_temp-1));
+  Real logtlim_table = log10(temp_grid(n_temp-1));
   if(nt2 == n_temp-1 && (logt > logtlim_table)){
     Real scaling = pow(10.0, -3.5*(logt - logtlim_table));
     kappa_t1_rho1_gray *= scaling;
@@ -167,11 +192,11 @@ void InterpolateKappa(const OpacityTable& tab, Real rho, Real tgas, Real &kappa_
 
   //Note that if density is below the tabulated value, will use the lowest temperature in table
 
-  Real rho_1 = tab.rho_grid(nrho1);
-  Real rho_2 = tab.rho_grid(nrho2);
+  Real rho_1 = rho_grid(nrho1); //tab.rho_grid(nrho1);
+  Real rho_2 = rho_grid(nrho2);
 
-  Real t_1 = tab.temp_grid(nt1);
-  Real t_2 = tab.temp_grid(nt2);
+  Real t_1 = temp_grid(nt1); //tab.temp_grid(nt1);
+  Real t_2 = temp_grid(nt2); //tab.temp_grid(nt2);
 
   //SPEP 3: Rossland opacity interpolation
   if (nrho1 == nrho2){ //if density both on lower or upper end of table 

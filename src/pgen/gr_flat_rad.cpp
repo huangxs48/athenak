@@ -155,7 +155,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   user_hist_func = TDEFluxes;
 
-  
   //-------------------------------
   // load opacity table, write them into an opacitydata instance, so all devices can access to them
   if (is_radiation_enabled && pmbp->prad->user_opacity) {
