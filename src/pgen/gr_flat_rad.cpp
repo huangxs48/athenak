@@ -159,14 +159,14 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   // load opacity table, write them into an opacitydata instance, so all devices can access to them
   if (is_radiation_enabled && pmbp->prad->user_opacity) {
     OpacityData& data = OpacityData::GetInstance();
-    OpacityTable& tab = data.table_host; //tab is the object on host
+    //OpacityTable& tab = data.table_host; //tab is the object on host
     
     int n_rho = tde.n_rho;
     int n_temp = tde.n_temp;
     
     //assign shape to opacity table instance
-    tab.n_rho = n_rho;
-    tab.n_temp = n_temp;
+    data.n_rho = n_rho;
+    data.n_temp = n_temp;
     
     //prepare buffer arrays to store read-in data
     HostArray1D<Real> combine_temp_grid("combine_temp_grid", n_temp);
@@ -226,16 +226,16 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     }//if kappa_name_is_empty
 
     // Allocatedebice  Kokkos views
-    tab.rho_grid  = Kokkos::View<Real*>("rho_grid", n_rho);
-    tab.temp_grid = Kokkos::View<Real*>("temp_grid", n_temp);
-    tab.kappa_ross = Kokkos::View<Real**>("kappa_ross", n_temp, n_rho);
-    tab.kappa_planck = Kokkos::View<Real**>("kappa_planck", n_temp, n_rho);
+    data.rho_grid  = Kokkos::View<Real*>("rho_grid", n_rho);
+    data.temp_grid = Kokkos::View<Real*>("temp_grid", n_temp);
+    data.kappa_ross = Kokkos::View<Real**>("kappa_ross", n_temp, n_rho);
+    data.kappa_planck = Kokkos::View<Real**>("kappa_planck", n_temp, n_rho);
 
     // Create host mirrors and deep_copy 
-    auto rho_host  = Kokkos::create_mirror_view(tab.rho_grid);
-    auto temp_host = Kokkos::create_mirror_view(tab.temp_grid);
-    auto kappa_ross_host  = Kokkos::create_mirror_view(tab.kappa_ross);
-    auto kappa_planck_host  = Kokkos::create_mirror_view(tab.kappa_planck);
+    auto rho_host  = Kokkos::create_mirror_view(data.rho_grid);
+    auto temp_host = Kokkos::create_mirror_view(data.temp_grid);
+    auto kappa_ross_host  = Kokkos::create_mirror_view(data.kappa_ross);
+    auto kappa_planck_host  = Kokkos::create_mirror_view(data.kappa_planck);
 
     // fill in the rho_host, temp_host, kappa_ross_host and kappa_planck_host
     for (int i = 0; i < n_temp; ++i) {
@@ -256,23 +256,20 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     }
     
     // copy to instance
-    Kokkos::deep_copy(tab.rho_grid,  rho_host);
-    Kokkos::deep_copy(tab.temp_grid, temp_host);
-    Kokkos::deep_copy(tab.kappa_ross, kappa_ross_host);
-    Kokkos::deep_copy(tab.kappa_planck, kappa_planck_host);
+    Kokkos::deep_copy(data.rho_grid,  rho_host);
+    Kokkos::deep_copy(data.temp_grid, temp_host);
+    Kokkos::deep_copy(data.kappa_ross, kappa_ross_host);
+    Kokkos::deep_copy(data.kappa_planck, kappa_planck_host);
 
-    // alloate device talbe
-    data.table_device = Kokkos::View<OpacityTable*>("opacity_dev", 1);
-    Kokkos::deep_copy(data.table_device, tab);
-    
-    // //chatGPT wrote this debugging block
-    // auto opacity_dev = GetDeviceOpacityTable();   // host retrieves device view
-     
+    // // Claude wrote this debugging block, verify opacity table loaded correctly on device
+    // auto dbg_rho_grid  = data.rho_grid;
+    // auto dbg_temp_grid = data.temp_grid;
+    // int  dbg_n_rho = data.n_rho;
+    // int  dbg_n_temp = data.n_temp;
     // Kokkos::parallel_for("debug_opacity", 1, KOKKOS_LAMBDA(int) {
-    //     OpacityTable tab = opacity_dev(0);
     //     printf("GPU opacity: n_rho=%d n_temp=%d rho0=%g T0=%g\n",
-    //            tab.n_rho, tab.n_temp,
-    //            tab.rho_grid(0), tab.temp_grid(0));
+    //            dbg_n_rho, dbg_n_temp,
+    //            dbg_rho_grid(0), dbg_temp_grid(0));
     // });
     // Kokkos::fence("after debug_opacity");
   }//end if radiation enabled and user opacity

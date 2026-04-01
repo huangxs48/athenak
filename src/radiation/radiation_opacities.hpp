@@ -62,30 +62,26 @@ void UserOpacityFunction(// density and density scale
                      const Real k_a, const Real k_s, const Real k_p,
                      // output sigma
                      Real& sigma_a, Real& sigma_s, Real& sigma_p,
-		     // pass the opacity table
-		     const Kokkos::View<OpacityTable*> &opacity_dev){
+                     // pass the opacity table variables
+                     const int n_rho, const int n_temp,
+                     const Kokkos::View<Real*>& rho_grid,
+                     const Kokkos::View<Real*>& temp_grid,
+                     const Kokkos::View<Real**>& kappa_ross,
+                     const Kokkos::View<Real**>& kappa_planck){
   
-  //const auto& tab = OpacityData::GetInstance().table;
-  //pass the device-accessible object
-  //const OpacityTable tab = OpacityData::GetInstance().table_device(0);
-	
-  const OpacityTable tab = opacity_dev(0);
-  Real kappa_ross_tab, kappa_planck_tab;
 
-  //Real rho_test = 1.0e-10;
-  //Real temp_test = 3.4e5;
-  //InterpolateKappa(tab, rho_test, temp_test, kappa_ross_tab, kappa_planck_tab);
-
-  // printf("testing for density %g and temperature %g: kappa_ross=%g, kappa_planck=%g\n",
-  // 	 rho_test, temp_test, kappa_ross_tab, kappa_planck_tab);
+  //allocate individual views for the Opacity Data structure
+  //const OpacityTable tab = opacity_dev(0);
+  Real kappa_ross_interp, kappa_planck_interp;
 
   Real dens_cgs = dens * density_scale;
   Real temp_cgs = temp * temperature_scale;
   
-  InterpolateKappa(tab, dens_cgs, temp_cgs, kappa_ross_tab, kappa_planck_tab);
+  InterpolateKappa(n_rho, n_temp, rho_grid, temp_grid, kappa_ross, kappa_planck,
+                   dens_cgs, temp_cgs, kappa_ross_interp, kappa_planck_interp);
   
   //if (dens_cgs>1.0e-14){
-  //    printf("current density: %g, temperature: %g, kappa_ross: %g, kappa_planck: %g\n", dens_cgs, temp_cgs, kappa_ross_tab, kappa_planck_tab);
+  //    printf("current density: %g, temperature: %g, kappa_ross: %g, kappa_planck: %g\n", dens_cgs, temp_cgs, kappa_ross_interp, kappa_planck_interp);
   //}
   //OPAL/TOPs Rosseland mean opacity is the total absorption, including scatter
   Real kappa_ross_cgs = 0.0;
@@ -94,21 +90,21 @@ void UserOpacityFunction(// density and density scale
   Real temp_ion = temp_ion_cgs/temperature_scale;
 
   //k_s is in c.g.s
-  if (kappa_ross_tab > k_s){
-    kappa_ross_cgs = kappa_ross_tab - k_s;
+  if (kappa_ross_interp > k_s){
+    kappa_ross_cgs = kappa_ross_interp - k_s;
     kappa_sct_cgs = k_s;
   }else{ //if tabulated rosseland mean < scatter  
     if (temp_cgs < temp_ion_cgs){//below ionization temperature, no scatter opacity
-      kappa_ross_cgs = kappa_ross_tab;
+      kappa_ross_cgs = kappa_ross_interp;
       kappa_sct_cgs = 0.0;
     }else{
-      kappa_sct_cgs = kappa_ross_tab;
+      kappa_sct_cgs = kappa_ross_interp;
       kappa_ross_cgs = 0.0;
     }
   }
   
   //in code, kappa_planck is difference between kappa_planck and kappa_ross
-  Real kappa_planck_cgs = kappa_planck_tab - kappa_ross_cgs;
+  Real kappa_planck_cgs = kappa_planck_interp - kappa_ross_cgs;
 
   //add another density cut, higher opacity and density before injecting stream
   if (dens*density_scale < 1.0e-14){
