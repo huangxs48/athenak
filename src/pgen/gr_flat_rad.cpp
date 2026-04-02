@@ -769,7 +769,8 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
   //  (2) energy flux
   //  (3) angular momentum flux
   //  (4) magnetic flux (iff MHD)
-  pdata->nhist = nradii*nflux;
+  // add one more entry for injection mass flux
+  pdata->nhist = nradii*nflux + 1;
   if (pdata->nhist > NHISTORY_VARIABLES) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
               << std::endl << "User history function specified pdata->nhist larger than"
@@ -787,6 +788,7 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
       pdata->label[nflux*g+3] = "phi_" + rad_str;
     }
   }
+
 
   // go through angles at each radii:
   DualArray2D<Real> interpolated_bcc;  // needed for MHD
@@ -891,7 +893,7 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
       Real sqrtmdet = (r2+SQR(spin*cos(theta)));
 
       // compute area/mass flux
-      pdata->hdata[nflux*g+0] += sqrtmdet * domega; //-1.0*int_dn*ur*sqrtmdet*domega; //Newt: - rho * u_r * r * domega
+      pdata->hdata[nflux*g+0] += -1.0*int_dn*ur*sqrtmdet*domega; //Newt: - rho * u_r * r * domega
 
       // compute energy flux
       Real t1_0 = (int_dn + gamma*int_ie + b_sq)*ur*u_0 - br*b_0;
@@ -913,6 +915,42 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
       
     }
   }
+
+  // add boundary injection entry
+  pdata->label[nradii*nflux] = "mdot_inj";
+  // capture mesh varialbes
+  auto &indcs = pm->mb_indcs;
+  auto &size = pmbp->pmb->mb_size;
+  auto &mb_bcs = pmbp->pmb->mb_bcs;
+  int &is = indcs.is;  int &ie = indcs.ie;
+  int &js = indcs.js;
+  int &ks = indcs.ks;
+  int ng = indcs.ng;
+  int n2 = indcs.nx2 + 2*ng;
+  int n3 = indcs.nx3 + 2*ng;
+  int nmb = pmbp->nmb_thispack;
+  auto tde_ = tde;
+
+  Real mdot_inj = 0.0;
+  Kokkos::parallel_reduce("mdot_inj",
+    Kokkos::MDRangePolicy<Kokkos::Rank<3>>({0,0,0},{nmb,n3,n2}),
+    KOKKOS_LAMBDA(int m, int k, int j, Real &lsum) {
+      if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
+        Real x1v = CellCenterX((ie+1)-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+        Real x2v = CellCenterX(j-js,      indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+        Real x3v = CellCenterX(k-ks,      indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+        Real dr_now = sqrt(SQR(x1v-tde_.x1_inj)+SQR(x2v-tde_.x2_inj)+SQR(x3v-tde_.x3_inj));
+        if (dr_now <= tde_.r_inj_thresh_coarse) {
+          Real dx2 = (size.d_view(m).x2max - size.d_view(m).x2min) / indcs.nx2;
+          Real dx3 = (size.d_view(m).x3max - size.d_view(m).x3min) / indcs.nx3;
+          lsum += tde_.local_dens * fabs(tde_.vx1_inj) * dx2 * dx3;
+        }
+      }
+    }, mdot_inj);
+#ifdef MPI_PARALLEL
+  MPI_Allreduce(MPI_IN_PLACE, &mdot_inj, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
+  pdata->hdata[nradii*nflux] = mdot_inj;
 
   // fill rest of the_array with zeros, if nhist < NHISTORY_VARIABLES
   for (int n=pdata->nhist; n<NHISTORY_VARIABLES; ++n) {
