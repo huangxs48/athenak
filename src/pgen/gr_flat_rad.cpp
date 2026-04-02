@@ -61,6 +61,7 @@ struct tde_pgen{
   //stream density structure
   int uniform_stream; //flag for uniform density
   Real h_stream; //scale height
+  int inj_cell_debug; //flag to bookkeep injection cells
 
   Real hst_radii_1, hst_radii_2;
 
@@ -122,6 +123,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   //stream structure
   tde.uniform_stream = pin->GetOrAddInteger("problem", "uniform_stream", 1);
   tde.h_stream = pin->GetOrAddReal("problem", "h_stream", 0.01);
+  tde.inj_cell_debug = pin->GetOrAddInteger("problem", "inj_cell_debug", 0);
 
   //if radiation
   if (pmbp->prad != nullptr){
@@ -210,14 +212,14 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       // Rosseland opacity table
       for (int j = 0; j < n_temp; ++j) {
         for (int i = 0; i < n_rho; ++i) {
-  	     fin >> combine_ross_table(j, i);
+         fin >> combine_ross_table(j, i);
         }
       }
 
       // Planck opacity table
       for (int j = 0; j < n_temp; ++j) {
         for (int i = 0; i < n_rho; ++i) {
-  	      fin >> combine_planck_table(j, i);
+          fin >> combine_planck_table(j, i);
         }
       }
 
@@ -333,7 +335,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       // Extract metric and inverse
       Real glower[4][4], gupper[4][4];
       ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin,
-			      glower, gupper);
+            glower, gupper);
 
       Real rad = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
       // Calculate Boyer-Lindquist coordinates of cell
@@ -350,7 +352,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       //xs: does this need the check of excising inside horizon as gr_torus.cpp L362?
       if (rad < 1.0) {
         den = tde_.dexcise;
-	pres = tde_.pexcise;
+        pres = tde_.pexcise;
       }
       w0_(m,IDN,k,j,i) = den;
       w0_(m,IVX,k,j,i) = 0.0;
@@ -360,52 +362,52 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
       
       if (is_radiation_enabled){//copied from gr_torus.cpp, initialize radiation intensity
-	Real temp_init = pres/den;
-	Real urad = tde_.arad * SQR(SQR(temp_init));
+        Real temp_init = pres/den;
+        Real urad = tde_.arad * SQR(SQR(temp_init));
 
-	//no initial velocity
-	Real uu1 = 0.0;
-	Real uu2 = 0.0;
-	Real uu3 = 0.0;
+        //no initial velocity
+        Real uu1 = 0.0;
+        Real uu2 = 0.0;
+        Real uu3 = 0.0;
 
-	Real q = glower[1][1]*uu1*uu1 + 2.0*glower[1][2]*uu1*uu2 + 2.0*glower[1][3]*uu1*uu3
-	  + glower[2][2]*uu2*uu2 + 2.0*glower[2][3]*uu2*uu3
-	  + glower[3][3]*uu3*uu3;
-	Real uu0 = sqrt(1.0 + q);
-	Real u_tet_[4]; //velocity in tetrad frame
-	u_tet_[0] = (norm_to_tet_(m,0,0,k,j,i)*uu0 + norm_to_tet_(m,0,1,k,j,i)*uu1 +
-		     norm_to_tet_(m,0,2,k,j,i)*uu2 + norm_to_tet_(m,0,3,k,j,i)*uu3);
-	u_tet_[1] = (norm_to_tet_(m,1,0,k,j,i)*uu0 + norm_to_tet_(m,1,1,k,j,i)*uu1 +
-		     norm_to_tet_(m,1,2,k,j,i)*uu2 + norm_to_tet_(m,1,3,k,j,i)*uu3);
-	u_tet_[2] = (norm_to_tet_(m,2,0,k,j,i)*uu0 + norm_to_tet_(m,2,1,k,j,i)*uu1 +
-		     norm_to_tet_(m,2,2,k,j,i)*uu2 + norm_to_tet_(m,2,3,k,j,i)*uu3);
-	u_tet_[3] = (norm_to_tet_(m,3,0,k,j,i)*uu0 + norm_to_tet_(m,3,1,k,j,i)*uu1 +
-		     norm_to_tet_(m,3,2,k,j,i)*uu2 + norm_to_tet_(m,3,3,k,j,i)*uu3);
+        Real q = glower[1][1]*uu1*uu1 + 2.0*glower[1][2]*uu1*uu2 + 2.0*glower[1][3]*uu1*uu3
+          + glower[2][2]*uu2*uu2 + 2.0*glower[2][3]*uu2*uu3
+          + glower[3][3]*uu3*uu3;
+        Real uu0 = sqrt(1.0 + q);
+        Real u_tet_[4]; //velocity in tetrad frame
+        u_tet_[0] = (norm_to_tet_(m,0,0,k,j,i)*uu0 + norm_to_tet_(m,0,1,k,j,i)*uu1 +
+               norm_to_tet_(m,0,2,k,j,i)*uu2 + norm_to_tet_(m,0,3,k,j,i)*uu3);
+        u_tet_[1] = (norm_to_tet_(m,1,0,k,j,i)*uu0 + norm_to_tet_(m,1,1,k,j,i)*uu1 +
+               norm_to_tet_(m,1,2,k,j,i)*uu2 + norm_to_tet_(m,1,3,k,j,i)*uu3);
+        u_tet_[2] = (norm_to_tet_(m,2,0,k,j,i)*uu0 + norm_to_tet_(m,2,1,k,j,i)*uu1 +
+               norm_to_tet_(m,2,2,k,j,i)*uu2 + norm_to_tet_(m,2,3,k,j,i)*uu3);
+        u_tet_[3] = (norm_to_tet_(m,3,0,k,j,i)*uu0 + norm_to_tet_(m,3,1,k,j,i)*uu1 +
+               norm_to_tet_(m,3,2,k,j,i)*uu2 + norm_to_tet_(m,3,3,k,j,i)*uu3);
 
-	
-	// Go through each angle
-	for (int n=0; n<nangles_; ++n) {
-	  // Calculate direction in fluid frame
-	  Real un_t = (u_tet_[1]*nh_c_.d_view(n,1) + u_tet_[2]*nh_c_.d_view(n,2) +
-		       u_tet_[3]*nh_c_.d_view(n,3)); //nh_c_ 
-	  Real n0_f = u_tet_[0]*nh_c_.d_view(n,0) - un_t; //fluid 
+  
+        // Go through each angle
+        for (int n=0; n<nangles_; ++n) {
+          // Calculate direction in fluid frame
+          Real un_t = (u_tet_[1]*nh_c_.d_view(n,1) + u_tet_[2]*nh_c_.d_view(n,2) +
+                 u_tet_[3]*nh_c_.d_view(n,3)); //nh_c_ 
+          Real n0_f = u_tet_[0]*nh_c_.d_view(n,0) - un_t; //fluid 
            
-	  //// Calculate intensity in tetrad frame
-	  Real n0 = tet_c_(m,0,0,k,j,i); 
-	  Real n_0 = 0.0;
-	  for (int d=0; d<4; ++d) {  
-	    n_0 += tetcov_c_(m,d,0,k,j,i)*nh_c_.d_view(n,d);  
-	  }
-	  //printf("m:%d, n:%d, k:%d, j:%d, i:%d, n0:%g, n_0:%g, n0_f:%g, urad:%g, \n", m, n , k, j,i, n0, n_0, n0_f, urad); 
-	  i0_(m,n,k,j,i) = n0*n_0*(urad/(4.0*M_PI))/SQR(SQR(n0_f));//cons
-	}
-	
+          //// Calculate intensity in tetrad frame
+          Real n0 = tet_c_(m,0,0,k,j,i); 
+          Real n_0 = 0.0;
+          for (int d=0; d<4; ++d) {  
+            n_0 += tetcov_c_(m,d,0,k,j,i)*nh_c_.d_view(n,d);  
+          }
+          //printf("m:%d, n:%d, k:%d, j:%d, i:%d, n0:%g, n_0:%g, n0_f:%g, urad:%g, \n", m, n , k, j,i, n0, n_0, n0_f, urad); 
+          i0_(m,n,k,j,i) = n0*n_0*(urad/(4.0*M_PI))/SQR(SQR(n0_f));//cons
+        }
+  
       }
 
       // uniformly fill all scalars to have equal concentration
       for (int n=nhydro; n<(nhydro+nscalars); ++n) {
-	w0_(m,n,k,j,i) = 0.0;
-	u0_(m,n,k,j,i) = 0.0 * den;
+        w0_(m,n,k,j,i) = 0.0;
+        u0_(m,n,k,j,i) = 0.0 * den;
       }
       
       }//ijk
@@ -457,6 +459,16 @@ void FixedStreamInflow(Mesh *pm) {
 
   pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,is-ng,is-1,0,(n2-1),0,(n3-1));
   pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,ie+1,ie+ng,0,(n2-1),0,(n3-1));
+
+  //additional blocks to bookkeep injection cells, 
+  //store injection cells in device array then copy to host, then print
+  //adapt to PVC nodes (cannot use printf or std::cout within par_for loop)
+  int max_inj = nmb * n2 * n3 * ng;
+  //DvceArray2D<Real> inj_cells("inj_cells", max_inj, 5);
+  DvceArray2D<Real> inj_cells("inj_cells", (tde_.inj_cell_debug ? max_inj : 1), 5);
+  Kokkos::View<int, DevMemSpace> counter("counter");
+  Kokkos::deep_copy(counter, 0);
+
   par_for("fixed_x1", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n2-1),0,(ng-1),
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     // inner x1 boundary
@@ -489,30 +501,55 @@ void FixedStreamInflow(Mesh *pm) {
       Real r_now = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
       Real dr_now = std::sqrt(SQR(x1v - tde_.x1_inj) + SQR(x2v - tde_.x2_inj) + SQR(x3v - tde_.x3_inj));
       if (dr_now <= tde_.r_inj_thresh_coarse){
-	
-	//check density flag
-	Real dens_now = tde_.local_dens;
-	if (tde_.uniform_stream==0){
-	  dens_now = tde_.local_dens * std::exp(-std::pow(dr_now/tde_.h_stream, 2)/2.0);
-	}
-	//printf("x1v:%g, x2v:%g, x3v:%g, x1inj:%g, x2inj:%g, x3inj:%g, rnow:%g, dr_now:%g, dens_now:%g\n", x1v, x2v, x3v, tde_.x1_inj, tde_.x2_inj, tde_.x3_inj, r_now, dr_now, dens_now);
-	
-	w0_(m,IDN,k,j,(ie+i+1)) = tde_.local_dens;
-	w0_(m,IEN,k,j,(ie+i+1)) = tde_.local_dens * tde_.local_temp * (g_gamma-1.0);
-	w0_(m,IM1,k,j,(ie+i+1)) = tde_.vx1_inj;
-	w0_(m,IM2,k,j,(ie+i+1)) = tde_.vx2_inj;
-	w0_(m,IM3,k,j,(ie+i+1)) = tde_.vx3_inj;
-	//printf("i:%d, local density:%g, temp:%g, ein:%g\n", ie+i+1, w0_(m,IDN,k,j,(ie+i+1)), w0_(m,IEN,k,j,(ie+i+1))/w0_(m,IDN,k,j,(ie+i+1))/(g_gamma-1.0), w0_(m,IEN,k,j,(ie+i+1)));
+  
+        //check density flag
+        Real dens_now = tde_.local_dens;
+        if (tde_.uniform_stream==0){
+          dens_now = tde_.local_dens * std::exp(-std::pow(dr_now/tde_.h_stream, 2)/2.0);
+        }
+        //printf("x1v:%g, x2v:%g, x3v:%g, x1inj:%g, x2inj:%g, x3inj:%g, rnow:%g, dr_now:%g, dens_now:%g\n", x1v, x2v, x3v, tde_.x1_inj, tde_.x2_inj, tde_.x3_inj, r_now, dr_now, dens_now);
+        if (tde_.inj_cell_debug == 1){
+          //Claude suggested using atomic_fetch to make sure each thread has its own writting
+          int idx = Kokkos::atomic_fetch_add(&counter(), 1);
+          if (idx < max_inj) {
+            inj_cells(idx, 0) = x1v;
+            inj_cells(idx, 1) = x2v;
+            inj_cells(idx, 2) = x3v;
+            inj_cells(idx, 3) = dr_now;
+            inj_cells(idx, 4) = dens_now;
+          }
+
+        }//debug block
+
+        w0_(m,IDN,k,j,(ie+i+1)) = tde_.local_dens;
+        w0_(m,IEN,k,j,(ie+i+1)) = tde_.local_dens * tde_.local_temp * (g_gamma-1.0);
+        w0_(m,IM1,k,j,(ie+i+1)) = tde_.vx1_inj;
+        w0_(m,IM2,k,j,(ie+i+1)) = tde_.vx2_inj;
+        w0_(m,IM3,k,j,(ie+i+1)) = tde_.vx3_inj;
+
+        //printf("i:%d, local density:%g, temp:%g, ein:%g\n", ie+i+1, w0_(m,IDN,k,j,(ie+i+1)), w0_(m,IEN,k,j,(ie+i+1))/w0_(m,IDN,k,j,(ie+i+1))/(g_gamma-1.0), w0_(m,IEN,k,j,(ie+i+1)));
       }else{
-	//ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_, rho,pgas,uu1,uu2,uu3);
-	w0_(m,IDN,k,j,(ie+i+1)) = w0_(m,IDN,k,j,ie);
-	w0_(m,IEN,k,j,(ie+i+1)) = w0_(m,IEN,k,j,ie);
-	w0_(m,IM1,k,j,(ie+i+1)) = fmax(0.0, w0_(m,IM1,k,j,ie));
-	w0_(m,IM2,k,j,(ie+i+1)) = w0_(m,IM2,k,j,ie);
-	w0_(m,IM3,k,j,(ie+i+1)) = w0_(m,IM3,k,j,ie);
+        //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_, rho,pgas,uu1,uu2,uu3);
+        w0_(m,IDN,k,j,(ie+i+1)) = w0_(m,IDN,k,j,ie);
+        w0_(m,IEN,k,j,(ie+i+1)) = w0_(m,IEN,k,j,ie);
+        w0_(m,IM1,k,j,(ie+i+1)) = fmax(0.0, w0_(m,IM1,k,j,ie));
+        w0_(m,IM2,k,j,(ie+i+1)) = w0_(m,IM2,k,j,ie);
+        w0_(m,IM3,k,j,(ie+i+1)) = w0_(m,IM3,k,j,ie);
       }
     }
   });
+
+  //debug print
+  if (tde_.inj_cell_debug == 1) {  
+    auto inj_host = Kokkos::create_mirror_view_and_copy(HostMemSpace(), inj_cells);
+    auto cnt_host = Kokkos::create_mirror_view_and_copy(HostMemSpace(), counter);
+    int n_inj = cnt_host();
+    for (int ii = 0; ii < n_inj; ii++) {
+      std::cout << "inj: x1=" << inj_host(ii,0) << " x2=" << inj_host(ii,1)
+                << " x3=" << inj_host(ii,2) << " dr=" << inj_host(ii,3)
+                << " dens=" << inj_host(ii,4) << "\n";
+    }
+  }//debug print block
 
   if (is_radiation_enabled) {
     // Set X1-BCs on i0 if Meshblock face is at the edge of computational domain
@@ -575,6 +612,7 @@ void FixedStreamInflow(Mesh *pm) {
       w0_(m,IM3,k,(je+j+1),i) = w0_(m,IM3,k,je,i);
     }
   });
+
   if (is_radiation_enabled) {
     // Set X2-BCs on i0 if Meshblock face is at the edge of computational domain
     par_for("outflow_rad_x2", DevExeSpace(),0,(nmb-1),0,nang1,0,(n3-1),0,(n1-1),
@@ -870,7 +908,7 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
 
       // //debug, check primitive/conservative
       // if (g==1 and int_dn>0.0){
-      // 	std::cout<<"g="<<g<<", n="<<n<<", r="<<r<<", theta="<<theta<<", phi="<<phi<<", interp_x1="<<x1<<", interp_x2="<<x2<<", interp_x3="<<x3<<", int_dn="<<int_dn<<", int_vx="<<int_vx<<", int_vy="<<int_vy<<", int_vz="<<int_vz<<", ur="<<ur<<", u1="<<u1<<", u2="<<u2<<", u3="<<u3<<std::endl;
+      //  std::cout<<"g="<<g<<", n="<<n<<", r="<<r<<", theta="<<theta<<", phi="<<phi<<", interp_x1="<<x1<<", interp_x2="<<x2<<", interp_x3="<<x3<<", int_dn="<<int_dn<<", int_vx="<<int_vx<<", int_vy="<<int_vy<<", int_vz="<<int_vz<<", ur="<<ur<<", u1="<<u1<<", u2="<<u2<<", u3="<<u3<<std::endl;
       // }//debug
       
     }
