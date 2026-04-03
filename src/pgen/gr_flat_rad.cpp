@@ -28,21 +28,17 @@
 #include "radiation/radiation.hpp"
 #include "dyn_grmhd/dyn_grmhd.hpp"
 #include "globals.hpp"
+#include "units.hpp"
 
 //opacity table
 #include "radiation/radiation_opacity_table.hpp"
 #include <fstream>
 
 namespace{
-  KOKKOS_INLINE_FUNCTION
-  static void GetBoyerLindquistCoordinates(struct tde_pgen pgen,
+KOKKOS_INLINE_FUNCTION
+static void GetBoyerLindquistCoordinates(struct tde_pgen pgen,
                                          Real x1, Real x2, Real x3,
                                          Real *pr, Real *ptheta, Real *pphi);
-// KOKKOS_INLINE_FUNCTION
-// static void ComputePrimitiveSingle(Real x1v, Real x2v, Real x3v, CoordData coord,
-//                                    struct bondi_pgen pgen,
-//                                    Real& rho, Real& pgas,
-//                                    Real& uu1, Real& uu2, Real& uu3);
 
 struct tde_pgen{
   Real spin;                // black hole spin
@@ -74,8 +70,22 @@ struct tde_pgen{
   std::string read_kappa_ross_name;
   std::string read_kappa_planck_name;
 
+  //mdot table, everything is on Host
+  int user_fallback_rate; //flag for tabulated fallback rate
+  std::string read_mdot_tab_name; //mdot table name
+  int n_mdot; //length of mdot table
+  Real mdot_norm; //normalization factor found by setting rho=1.0 in ghots injection zones
+  std::vector<Real> mdot_t_data;  // time grid [days or code units]
+  std::vector<Real> mdot_data;    // mdot grid
+
+  //units 
+  Real m_unit, l_unit, t_unit;
+
 };
- tde_pgen tde;
+tde_pgen tde;
+
+//function on host to interpolate fallback rate table
+void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now);
 
 }//namesapce
 
@@ -95,6 +105,12 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   // Is radiation enabled?
   const bool is_radiation_enabled = (pmbp->prad != nullptr);
+
+  // Get units for later use
+  Units *punit = pmbp->punit;
+  tde.l_unit = punit->length_cgs();
+  tde.m_unit = punit->mass_cgs();
+  tde.t_unit = punit->time_cgs();
 
   // Get spin of black hole
   tde.spin = pmbp->pcoord->coord_data.bh_spin;
@@ -136,6 +152,13 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     tde.read_kappa_ross_name = pin->GetOrAddString("problem","kappa_ross_name","");
     tde.read_kappa_planck_name = pin->GetOrAddString("problem","kappa_planck_name","");
   }
+
+  //if using user defined fallback rate
+  tde.user_fallback_rate = pin->GetOrAddInteger("problem", "user_fallback_rate", 0);
+  //tde.read_mdot_tday_tab_name = pin->GetOrAddString("problem","read_mdot_tday_tab_name","");
+  tde.read_mdot_tab_name = pin->GetOrAddString("problem","read_mdot_tab_name","");
+  tde.n_mdot = pin->GetOrAddInteger("problem", "n_mdot", 1);
+  tde.mdot_norm = pin->GetOrAddReal("problem", "mdot_norm", 1.0)
 
   ////check MPI tag size bound
   //int ub, flag;
@@ -276,6 +299,49 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     // Kokkos::fence("after debug_opacity");
   }//end if radiation enabled and user opacity
     
+  //-------------------------------------
+  // load mdot table if any
+  if (tde.user_fallback_rate){
+    
+    int n_mdot = tde.n_mdot;
+    
+    //prepare buffer arrays to store read-in data
+    HostArray1D<Real> mdot_t_grid("mdot_t_grid", n_mdot);
+    HostArray1D<Real> mdot_grid("mdot_grid", n_mdot);
+    
+    // Read file 
+    if (!tde.read_mdot_tab_name.empty()){
+
+      std::ifstream fin(tde.read_mdot_tab_name);
+      if (!fin.is_open()) {
+        std::cerr << "Error opening fallback rate file" << tde.read_mdot_tab_name<<std::endl;
+        return;
+      }
+
+      // load tday grid
+      for (int i = 0; i < n_mdot; ++i) {
+        fin >> mdot_t_grid(i);
+      }
+
+      // load mdot grid
+      for (int i = 0; i < n_mdot; ++i) {
+        fin >> mdot_grid(i);
+      }
+
+      fin.close();
+
+    }//end if mdot_name_is_empty
+
+    // load the read-in table to tde structure
+    tde.mdot_t_data.resize(n_mdot);
+    tde.mdot_data.resize(n_mdot);
+    for (int i = 0; i < n_mdot; ++i) {
+      tde.mdot_t_data[i] = mdot_t_grid(i);
+      tde.mdot_data[i]   = mdot_grid(i);
+    }
+
+  }
+
   //-------------------------------------
 
   // return if restart
@@ -460,11 +526,17 @@ void FixedStreamInflow(Mesh *pm) {
   pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,is-ng,is-1,0,(n2-1),0,(n3-1));
   pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,ie+1,ie+ng,0,(n2-1),0,(n3-1));
 
-  //additional blocks to bookkeep injection cells, 
-  //store injection cells in device array then copy to host, then print
-  //adapt to PVC nodes (cannot use printf or std::cout within par_for loop)
+  // mass fallback rate normalization
+  Real mdot_now_code = 1.0; //actual mdot in code unit
+  if (tde.user_fallback_rate){
+    Real time_now_code = pm->time;
+    GetMdot(tde_, time_now_code, mdot_now_code);
+  }
+
+  // additional blocks to bookkeep injection cells, 
+  // store injection cells in device array then copy to host, then print
+  // adapt to PVC nodes (cannot use printf or std::cout within par_for loop)
   int max_inj = nmb * n2 * n3 * ng;
-  //DvceArray2D<Real> inj_cells("inj_cells", max_inj, 5);
   DvceArray2D<Real> inj_cells("inj_cells", (tde_.inj_cell_debug ? max_inj : 1), 5);
   Kokkos::View<int, DevMemSpace> counter("counter");
   Kokkos::deep_copy(counter, 0);
@@ -503,9 +575,9 @@ void FixedStreamInflow(Mesh *pm) {
       if (dr_now <= tde_.r_inj_thresh_coarse){
   
         //check density flag
-        Real dens_now = tde_.local_dens;
+        Real dens_now = tde_.local_dens * (mdot_now_code/tde_.mdot_norm);
         if (tde_.uniform_stream==0){
-          dens_now = tde_.local_dens * std::exp(-std::pow(dr_now/tde_.h_stream, 2)/2.0);
+          dens_now = dens_now * std::exp(-std::pow(dr_now/tde_.h_stream, 2)/2.0);
         }
         //printf("x1v:%g, x2v:%g, x3v:%g, x1inj:%g, x2inj:%g, x3inj:%g, rnow:%g, dr_now:%g, dens_now:%g\n", x1v, x2v, x3v, tde_.x1_inj, tde_.x2_inj, tde_.x3_inj, r_now, dr_now, dens_now);
         if (tde_.inj_cell_debug == 1){
@@ -521,8 +593,8 @@ void FixedStreamInflow(Mesh *pm) {
 
         }//debug block
 
-        w0_(m,IDN,k,j,(ie+i+1)) = tde_.local_dens;
-        w0_(m,IEN,k,j,(ie+i+1)) = tde_.local_dens * tde_.local_temp * (g_gamma-1.0);
+        w0_(m,IDN,k,j,(ie+i+1)) = dens_now;
+        w0_(m,IEN,k,j,(ie+i+1)) = dens_now * tde_.local_temp * (g_gamma-1.0);
         w0_(m,IM1,k,j,(ie+i+1)) = tde_.vx1_inj;
         w0_(m,IM2,k,j,(ie+i+1)) = tde_.vx2_inj;
         w0_(m,IM3,k,j,(ie+i+1)) = tde_.vx3_inj;
@@ -958,4 +1030,45 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
   }
 
   return;
+}
+
+//----------------------------------------------------------------------------------------
+// Function to interpolate mdot table
+// input t_now, mdot_now are in code unit, tables are in c.g.s unit, 
+// unit conversion included in this function
+void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now){
+
+  // table time unit is day
+  Real t_now_day = t_now * tde.t_unit / 3600.0 / 24.0;
+  Real mdot_now_msunyr = 0.0;
+
+  int n = tde.n_mdot;
+  // lower and upper limit
+  if (t_now_day <= tde.mdot_t_data[0]){
+    mdot_now_msunyr = tde.mdot_data[0];
+  }else if(t_now_day >= tde.mdot_t_data[n-1]){
+    mdot_now_msunyr = tde.mdot_data[n-1];
+  }else{
+    // binary search for bracket
+    int lo = 0, hi = n - 1;
+
+    while (hi - lo > 1) {
+      int mid = (lo + hi) / 2;
+      if (tde.mdot_t_data[mid] <= t_now_day){
+        lo = mid; 
+      }else{ 
+        hi = mid;
+      }
+    }//end while
+
+    Real f = (t_now_day - tde.mdot_t_data[lo]) / (tde.mdot_t_data[hi] - tde.mdot_t_data[lo]);
+    // table mdot is in msun/yr
+    mdot_now_msunyr = tde.mdot_data[lo] + f * (tde.mdot_data[hi] - tde.mdot_data[lo]);
+  } 
+
+  // to code unit, cgs the same as unit.hpp
+  Real msun_cgs = 1.98841586e+33;
+  Real yr_cgs = 3.15576e+7;
+  mdot_now = mdot_now_msunyr * (msun_cgs / yr_cgs) / (tde.m_unit / tde.t_unit);
+
 }
