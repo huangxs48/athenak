@@ -28,7 +28,7 @@
 #include "radiation/radiation.hpp"
 #include "dyn_grmhd/dyn_grmhd.hpp"
 #include "globals.hpp"
-#include "units.hpp"
+#include "units/units.hpp"
 
 //opacity table
 #include "radiation/radiation_opacity_table.hpp"
@@ -107,10 +107,11 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   const bool is_radiation_enabled = (pmbp->prad != nullptr);
 
   // Get units for later use
-  Units *punit = pmbp->punit;
-  tde.l_unit = punit->length_cgs();
-  tde.m_unit = punit->mass_cgs();
-  tde.t_unit = punit->time_cgs();
+  const bool are_units_enabled = pin->DoesBlockExist("units");
+  if (!are_units_enabled) std::cerr<<"units block is not included in input file"<<std::endl;
+  tde.l_unit = pmbp->punit->length_cgs();
+  tde.m_unit = pmbp->punit->mass_cgs();
+  tde.t_unit = pmbp->punit->time_cgs();
 
   // Get spin of black hole
   tde.spin = pmbp->pcoord->coord_data.bh_spin;
@@ -158,7 +159,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   //tde.read_mdot_tday_tab_name = pin->GetOrAddString("problem","read_mdot_tday_tab_name","");
   tde.read_mdot_tab_name = pin->GetOrAddString("problem","read_mdot_tab_name","");
   tde.n_mdot = pin->GetOrAddInteger("problem", "n_mdot", 1);
-  tde.mdot_norm = pin->GetOrAddReal("problem", "mdot_norm", 1.0)
+  tde.mdot_norm = pin->GetOrAddReal("problem", "mdot_norm", 1.0);
 
   ////check MPI tag size bound
   //int ub, flag;
@@ -1032,6 +1033,7 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
   return;
 }
 
+namespace{
 //----------------------------------------------------------------------------------------
 // Function to interpolate mdot table
 // input t_now, mdot_now are in code unit, tables are in c.g.s unit, 
@@ -1071,4 +1073,5 @@ void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now){
   Real yr_cgs = 3.15576e+7;
   mdot_now = mdot_now_msunyr * (msun_cgs / yr_cgs) / (tde.m_unit / tde.t_unit);
 
+}
 }
