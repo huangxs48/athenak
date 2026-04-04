@@ -75,14 +75,17 @@ struct tde_pgen{
   std::string read_mdot_tab_name; //mdot table name
   int n_mdot; //length of mdot table
   Real mdot_norm; //normalization factor found by setting rho=1.0 in ghots injection zones
-  std::vector<Real> mdot_t_data;  // time grid [days or code units]
-  std::vector<Real> mdot_data;    // mdot grid
+  // std::vector<Real> mdot_t_data;  // time grid [days or code units]
+  // std::vector<Real> mdot_data;    // mdot grid
 
   //units 
   Real m_unit, l_unit, t_unit;
 
 };
 tde_pgen tde;
+//these remains in name space
+std::vector<Real> mdot_t_data;  // time grid [days or code units]
+std::vector<Real> mdot_data;    // mdot grid
 
 //function on host to interpolate fallback rate table
 void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now);
@@ -334,11 +337,11 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     }//end if mdot_name_is_empty
 
     // load the read-in table to tde structure
-    tde.mdot_t_data.resize(n_mdot);
-    tde.mdot_data.resize(n_mdot);
+    mdot_t_data.resize(n_mdot);
+    mdot_data.resize(n_mdot);
     for (int i = 0; i < n_mdot; ++i) {
-      tde.mdot_t_data[i] = mdot_t_grid(i);
-      tde.mdot_data[i]   = mdot_grid(i);
+      mdot_t_data[i] = mdot_t_grid(i);
+      mdot_data[i]   = mdot_grid(i);
     }
 
   }
@@ -1046,26 +1049,26 @@ void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now){
 
   int n = tde.n_mdot;
   // lower and upper limit
-  if (t_now_day <= tde.mdot_t_data[0]){
-    mdot_now_msunyr = tde.mdot_data[0];
-  }else if(t_now_day >= tde.mdot_t_data[n-1]){
-    mdot_now_msunyr = tde.mdot_data[n-1];
+  if (t_now_day <= mdot_t_data[0]){
+    mdot_now_msunyr = mdot_data[0];
+  }else if(t_now_day >= mdot_t_data[n-1]){
+    mdot_now_msunyr = mdot_data[n-1];
   }else{
     // binary search for bracket
     int lo = 0, hi = n - 1;
 
     while (hi - lo > 1) {
       int mid = (lo + hi) / 2;
-      if (tde.mdot_t_data[mid] <= t_now_day){
+      if (mdot_t_data[mid] <= t_now_day){
         lo = mid; 
       }else{ 
         hi = mid;
       }
     }//end while
 
-    Real f = (t_now_day - tde.mdot_t_data[lo]) / (tde.mdot_t_data[hi] - tde.mdot_t_data[lo]);
+    Real f = (t_now_day - mdot_t_data[lo]) / (mdot_t_data[hi] - mdot_t_data[lo]);
     // table mdot is in msun/yr
-    mdot_now_msunyr = tde.mdot_data[lo] + f * (tde.mdot_data[hi] - tde.mdot_data[lo]);
+    mdot_now_msunyr = mdot_data[lo] + f * (mdot_data[hi] - mdot_data[lo]);
   } 
 
   // to code unit, cgs the same as unit.hpp
