@@ -344,6 +344,15 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       mdot_data[i]   = mdot_grid(i);
     }
 
+    //debugging, check mdot read
+    if (global_variable::my_rank==0){
+      std::cout << "[mdot table] n_mdot=" << n_mdot << std::endl;
+      std::cout << "[mdot table] first few rows (t_day, mdot_msunyr):" << std::endl;
+      for (int i = 0; i < 10; ++i) {
+        std::cout << "  i=" << i << "  t=" << mdot_t_data[i] << "  mdot=" << mdot_data[i] << std::endl;
+      }
+    }//end debug
+
   }
 
   //-------------------------------------
@@ -535,6 +544,20 @@ void FixedStreamInflow(Mesh *pm) {
   if (tde.user_fallback_rate){
     Real time_now_code = pm->time;
     GetMdot(tde_, time_now_code, mdot_now_code);
+
+    //debug
+    if (global_variable::my_rank==0){
+      Real t_day = pm->time * tde_.t_unit / 3600.0 / 24.0;
+      std::cout << "[GetMdot] t_code=" << pm->time
+                << "  t_day=" << t_day
+                << "  mdot_now_code=" << mdot_now_code << std::endl;
+      //check a random mdot
+      Real t_test = 6000; //in code unit
+      Real mdot_test = 1.0;
+      GetMdot(tde_, t_test, mdot_test);
+      std::cout << "  testing t_test=" << t_test
+                << "  mdot_test=" << mdot_test << std::endl;
+    }//debug
   }
 
   // additional blocks to bookkeep injection cells, 
