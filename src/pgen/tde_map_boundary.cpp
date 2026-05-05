@@ -1,0 +1,1318 @@
+//========================================================================================
+// Athena++ astrophysical MHD code, Kokkos version
+// Copyright(C) 2020 James M. Stone <jmstone@ias.edu> and the Athena code team
+// Licensed under the 3-clause BSD License (the "LICENSE")
+//========================================================================================
+//! \file gr_flat.cpp
+//! \brief Problem generator for accretion process in tidal disruption event
+//! 
+//!
+
+#include <algorithm>
+#include <cmath>
+#include <sstream>
+#include <iostream>
+#include <iomanip>
+
+#include "athena.hpp"
+#include "parameter_input.hpp"
+#include "mesh/mesh.hpp"
+#include "coordinates/adm.hpp"
+#include "coordinates/coordinates.hpp"
+#include "coordinates/cartesian_ks.hpp"
+#include "coordinates/cell_locations.hpp"
+#include "eos/eos.hpp"
+#include "geodesic-grid/geodesic_grid.hpp"
+#include "geodesic-grid/spherical_grid.hpp"
+#include "hydro/hydro.hpp"
+#include "mhd/mhd.hpp"
+#include "radiation/radiation.hpp"
+#include "dyn_grmhd/dyn_grmhd.hpp"
+#include "globals.hpp"
+#include "units/units.hpp"
+
+//opacity table
+#include "radiation/radiation_opacity_table.hpp"
+#include <fstream>
+
+namespace{
+KOKKOS_INLINE_FUNCTION
+static void GetBoyerLindquistCoordinates(struct tde_pgen pgen,
+                                         Real x1, Real x2, Real x3,
+                                         Real *pr, Real *ptheta, Real *pphi);
+
+struct tde_pgen{
+  Real spin;                // black hole spin
+  Real dexcise, pexcise;    // excision parameters
+  Real arad;                // radiation constant
+
+  Real d_amb;               // initial ambient density
+  Real p_amb;               // initial ambient pressure
+
+  //injection location, velocity and threshhold
+  Real x1_inj, x2_inj, x3_inj;
+  Real vx1_inj, vx2_inj, vx3_inj;
+  Real r_inj_thresh_coarse;
+  Real local_dens, local_temp;
+
+  //stream density structure
+  int uniform_stream; //flag for uniform density
+  Real h_stream; //scale height
+  int inj_cell_debug; //flag to bookkeep injection cells
+
+  Real hst_radii_1, hst_radii_2;
+
+  //opacity table
+  int n_rho;
+  int n_temp;
+  std::string read_rho_grid_name;
+  std::string read_temp_grid_name;
+  std::string read_kappa_name;
+  std::string read_kappa_ross_name;
+  std::string read_kappa_planck_name;
+
+  //mdot table, everything is on Host
+  int user_fallback_rate; //flag for tabulated fallback rate
+  std::string read_mdot_tab_name; //mdot table name
+  int n_mdot; //length of mdot table
+  Real mdot_norm; //normalization factor found by setting rho=1.0 in ghots injection zones
+  // std::vector<Real> mdot_t_data;  // time grid [days or code units]
+  // std::vector<Real> mdot_data;    // mdot grid
+
+  //units 
+  Real m_unit, l_unit, t_unit;
+
+  //binary file read-in datas
+  std::string bin_file; //name of the binary file to intialize domain, 
+  int binary_nbin1; //binary file size nx1
+  int binary_nbin2; //binary file size nx2
+  int binary_nbin3; //binary file size nx3
+  int binary_n_vars; //number of variable in binary file
+  int binary_n_time; //number of meshblock in binary file
+  Real binary_xmax; //binary file maxium size in x direction (physical size of the box)
+  Real binary_ymax; //binary file maxium size in y direction (physical size of the box)
+  Real binary_zmax; //binary file maxium size in z direction (physical size of the box)
+  Real binary_x0; //binary file center
+  Real binary_y0; //binary file center
+  Real binary_z0; //binary file center
+
+};
+tde_pgen tde;
+//these remains in name space
+std::vector<Real> mdot_t_data;  // time grid [days or code units]
+std::vector<Real> mdot_data;    // mdot grid
+
+//function on host to interpolate fallback rate table
+void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now);
+
+//binary data storage
+bool binary_read = false;
+static DvceArray5D<Real> binary_data_device("binary_data_device", 1, 1, 1, 1, 1);
+
+//function to fill the read-in binary data
+ void LoadBinaryData(const tde_pgen &tde, int time_idx);
+ 
+//function to interpolate a grid point in the domain locates at x,y,z
+//using values from a 5D data_array with shape (N_time, N_var, nx, ny, nz)
+KOKKOS_INLINE_FUNCTION Real TrilinearInterpolate(const DvceArray5D<Real>& data_array, int var_idx,
+						 Real x, Real y, Real z, Real xmax, Real ymax, Real zmax,
+						 Real x0, Real y0, Real z0, 
+						 int nx, int ny, int nz);
+
+}//namesapce
+
+// prototypes for user-defined BCs and error functions
+void FixedStreamInflow(Mesh *pm);
+
+// prototype for custom history function
+void TDEFluxes(HistoryData *pdata, Mesh *pm);
+
+//----------------------------------------------------------------------------------------
+//! \fn ProblemGenerator::UserProblem_()
+//! \brief Problem Generator for spherical tde stream problem
+
+void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
+
+  MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
+
+  // Is radiation enabled?
+  const bool is_radiation_enabled = (pmbp->prad != nullptr);
+
+  // Get units for later use
+  const bool are_units_enabled = pin->DoesBlockExist("units");
+  if (!are_units_enabled) std::cerr<<"units block is not included in input file"<<std::endl;
+  tde.l_unit = pmbp->punit->length_cgs();
+  tde.m_unit = pmbp->punit->mass_cgs();
+  tde.t_unit = pmbp->punit->time_cgs();
+
+  // Get spin of black hole
+  tde.spin = pmbp->pcoord->coord_data.bh_spin;
+  const Real r_excise = pmbp->pcoord->coord_data.rexcise;
+
+  // Get excision parameters
+  tde.dexcise = pmbp->pcoord->coord_data.dexcise;
+  tde.pexcise = pmbp->pcoord->coord_data.pexcise;
+
+  // ambient gas 
+  tde.p_amb   = pin->GetOrAddReal("problem", "p_amb", 1.0e-10);
+  tde.d_amb   = pin->GetOrAddReal("problem", "d_amb", 1.0e-10);
+
+  //injection point
+  tde.x1_inj = pin->GetReal("problem", "x1_inj");
+  tde.x2_inj = pin->GetReal("problem", "x2_inj");
+  tde.x3_inj = pin->GetReal("problem", "x3_inj");
+  tde.vx1_inj = pin->GetReal("problem", "vx1_inj");
+  tde.vx2_inj = pin->GetReal("problem", "vx2_inj");
+  tde.vx3_inj = pin->GetReal("problem", "vx3_inj");
+  tde.local_dens = pin->GetReal("problem", "local_dens");
+  tde.local_temp = pin->GetReal("problem", "local_temp");
+  tde.r_inj_thresh_coarse = pin->GetReal("problem", "r_inj_thresh_coarse");
+  tde.hst_radii_1 = pin->GetOrAddReal("problem", "hst_radii_1", 100.0);
+  tde.hst_radii_2 = pin->GetOrAddReal("problem", "hst_radii_2", 80.0);
+  //stream structure
+  tde.uniform_stream = pin->GetOrAddInteger("problem", "uniform_stream", 1);
+  tde.h_stream = pin->GetOrAddReal("problem", "h_stream", 0.01);
+  tde.inj_cell_debug = pin->GetOrAddInteger("problem", "inj_cell_debug", 0);
+
+  //binary file
+  tde.bin_file = pin->GetOrAddString("problem","bin_file","");
+  tde.binary_nbin1 = pin->GetOrAddInteger("problem", "binary_nbin1", 64);
+  tde.binary_nbin2 = pin->GetOrAddInteger("problem", "binary_nbin2", 64);
+  tde.binary_nbin3 = pin->GetOrAddInteger("problem", "binary_nbin3", 64);
+  tde.binary_xmax = pin->GetOrAddReal("problem", "binary_xmax", 50.0); //in rg
+  tde.binary_ymax = pin->GetOrAddReal("problem", "binary_ymax", 50.0); //in rg
+  tde.binary_zmax = pin->GetOrAddReal("problem", "binary_zmax", 50.0); //in rg 
+  tde.binary_x0 = pin->GetOrAddReal("problem", "binary_x0", 0.0); //in rg 
+  tde.binary_y0 = pin->GetOrAddReal("problem", "binary_y0", 0.0); //in rg 
+  tde.binary_z0 = pin->GetOrAddReal("problem", "binary_z0", 0.0); //in rg 
+  tde.binary_n_vars = pin->GetOrAddInteger("problem", "binary_n_vars", 4);
+  tde.binary_n_time = pin->GetOrAddInteger("problem", "binary_n_time", 1);
+
+  //if radiation
+  if (pmbp->prad != nullptr){
+    tde.arad = pmbp->prad->arad;
+    tde.n_rho = pin->GetInteger("problem","n_rho");
+    tde.n_temp = pin->GetInteger("problem","n_temp");
+    tde.read_rho_grid_name = pin->GetOrAddString("problem","rho_grid_name","");
+    tde.read_temp_grid_name = pin->GetOrAddString("problem","temp_grid_name","");
+    tde.read_kappa_name = pin->GetOrAddString("problem","kappa_name","");
+    tde.read_kappa_ross_name = pin->GetOrAddString("problem","kappa_ross_name","");
+    tde.read_kappa_planck_name = pin->GetOrAddString("problem","kappa_planck_name","");
+  }
+
+  //if using user defined fallback rate
+  tde.user_fallback_rate = pin->GetOrAddInteger("problem", "user_fallback_rate", 0);
+  //tde.read_mdot_tday_tab_name = pin->GetOrAddString("problem","read_mdot_tday_tab_name","");
+  tde.read_mdot_tab_name = pin->GetOrAddString("problem","read_mdot_tab_name","");
+  tde.n_mdot = pin->GetOrAddInteger("problem", "n_mdot", 1);
+  tde.mdot_norm = pin->GetOrAddReal("problem", "mdot_norm", 1.0);
+
+  ////check MPI tag size bound
+  //int ub, flag;
+  //MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_TAG_UB, &ub, &flag);
+  //if(flag) printf("MPI_TAG_UB = %d\n", ub);
+
+  // set user boundary bondition, effective is diode in three directions now
+  user_bcs_func = FixedStreamInflow;
+
+  // Spherical Grid for user-defined history, copied from gr_torus
+  auto &grids = spherical_grids;
+  const Real rflux = (is_radiation_enabled) ? ceil(r_excise + 1.0) : 1.0 + sqrt(1.0 - SQR(tde.spin));
+  int sph_grid_level = 6;
+  grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, rflux)); //spherical grid level is 5 levels
+  // NOTE(@pdmullen): Enroll additional radii for flux analysis by
+  // pushing back the grids vector with additional SphericalGrid instances
+  grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, tde.hst_radii_1));
+  grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, tde.hst_radii_2));
+
+  user_hist_func = TDEFluxes;
+
+  //-------------------------------
+  // load opacity table, write them into an opacitydata instance, so all devices can access to them
+  if (is_radiation_enabled && pmbp->prad->user_opacity) {
+    OpacityData& data = OpacityData::GetInstance();
+    //OpacityTable& tab = data.table_host; //tab is the object on host
+    
+    int n_rho = tde.n_rho;
+    int n_temp = tde.n_temp;
+    
+    //assign shape to opacity table instance
+    data.n_rho = n_rho;
+    data.n_temp = n_temp;
+    
+    //prepare buffer arrays to store read-in data
+    HostArray1D<Real> combine_temp_grid("combine_temp_grid", n_temp);
+    HostArray1D<Real> combine_rho_grid("combine_rho_grid", n_rho);
+    HostArray2D<Real> combine_ross_table("combine_ross_table", n_temp, n_rho);
+    HostArray2D<Real> combine_planck_table("combine_planck_table", n_temp, n_rho);
+    
+    // Read file into std::vector<Real> rho_vec, temp_vec, kappa_vec
+    if (!tde.read_kappa_name.empty()){
+
+      std::ifstream fin(tde.read_kappa_name);
+      if (!fin.is_open()) {
+        std::cerr << "Error opening opacity file" << tde.read_kappa_name<<std::endl;
+        return;
+      }
+
+      // skip first two integers
+      int n_rho_read, n_temp_read;
+      fin >> n_temp_read >> n_rho_read;
+   
+      // quick sanity check
+      if (n_rho_read!=n_rho){
+        std::cerr<<"opacity file n_rho is:"<<n_rho_read<<", but input file n_rho is:"<<n_rho<<std::endl;
+        return;
+      }
+      if (n_temp_read!=n_temp){
+        std::cerr<<"opacity file n_temp is:"<<n_temp_read<<", but input file n_temp is:"<<n_temp<<std::endl;
+        return;
+      }
+
+      // load temperature grid
+      for (int i = 0; i < n_temp; ++i) {
+        fin >> combine_temp_grid(i);
+      }
+
+      // load density grid
+      for (int i = 0; i < n_rho; ++i) {
+        fin >> combine_rho_grid(i);
+      }
+
+      // Rosseland opacity table
+      for (int j = 0; j < n_temp; ++j) {
+        for (int i = 0; i < n_rho; ++i) {
+         fin >> combine_ross_table(j, i);
+        }
+      }
+
+      // Planck opacity table
+      for (int j = 0; j < n_temp; ++j) {
+        for (int i = 0; i < n_rho; ++i) {
+          fin >> combine_planck_table(j, i);
+        }
+      }
+
+      fin.close();
+
+    }//if kappa_name_is_empty
+
+    // Allocatedebice  Kokkos views
+    data.rho_grid  = Kokkos::View<Real*>("rho_grid", n_rho);
+    data.temp_grid = Kokkos::View<Real*>("temp_grid", n_temp);
+    data.kappa_ross = Kokkos::View<Real**>("kappa_ross", n_temp, n_rho);
+    data.kappa_planck = Kokkos::View<Real**>("kappa_planck", n_temp, n_rho);
+
+    // Create host mirrors and deep_copy 
+    auto rho_host  = Kokkos::create_mirror_view(data.rho_grid);
+    auto temp_host = Kokkos::create_mirror_view(data.temp_grid);
+    auto kappa_ross_host  = Kokkos::create_mirror_view(data.kappa_ross);
+    auto kappa_planck_host  = Kokkos::create_mirror_view(data.kappa_planck);
+
+    // fill in the rho_host, temp_host, kappa_ross_host and kappa_planck_host
+    for (int i = 0; i < n_temp; ++i) {
+      temp_host(i) = combine_temp_grid(i);
+    }
+    for (int i = 0; i < n_rho; ++i) {
+      rho_host(i) = combine_rho_grid(i);
+    }
+    for (int j = 0; j < n_temp; ++j) {
+      for (int i = 0; i < n_rho; ++i) {
+        kappa_ross_host(j,i) = combine_ross_table(j, i);
+      }
+    }
+    for (int j = 0; j < n_temp; ++j) {
+      for (int i = 0; i < n_rho; ++i) {
+        kappa_planck_host(j,i) = combine_planck_table(j, i);
+      }
+    }
+    
+    // copy to instance
+    Kokkos::deep_copy(data.rho_grid,  rho_host);
+    Kokkos::deep_copy(data.temp_grid, temp_host);
+    Kokkos::deep_copy(data.kappa_ross, kappa_ross_host);
+    Kokkos::deep_copy(data.kappa_planck, kappa_planck_host);
+
+    // // Claude wrote this debugging block, verify opacity table loaded correctly on device
+    // auto dbg_rho_grid  = data.rho_grid;
+    // auto dbg_temp_grid = data.temp_grid;
+    // int  dbg_n_rho = data.n_rho;
+    // int  dbg_n_temp = data.n_temp;
+    // Kokkos::parallel_for("debug_opacity", 1, KOKKOS_LAMBDA(int) {
+    //     printf("GPU opacity: n_rho=%d n_temp=%d rho0=%g T0=%g\n",
+    //            dbg_n_rho, dbg_n_temp,
+    //            dbg_rho_grid(0), dbg_temp_grid(0));
+    // });
+    // Kokkos::fence("after debug_opacity");
+  }//end if radiation enabled and user opacity
+    
+  //-------------------------------------
+  // load mdot table if any
+  if (tde.user_fallback_rate){
+    
+    int n_mdot = tde.n_mdot;
+    
+    //prepare buffer arrays to store read-in data
+    HostArray1D<Real> mdot_t_grid("mdot_t_grid", n_mdot);
+    HostArray1D<Real> mdot_grid("mdot_grid", n_mdot);
+    
+    // Read file 
+    if (!tde.read_mdot_tab_name.empty()){
+
+      std::ifstream fin(tde.read_mdot_tab_name);
+      if (!fin.is_open()) {
+        std::cerr << "Error opening fallback rate file" << tde.read_mdot_tab_name<<std::endl;
+        return;
+      }
+
+      // load tday grid
+      for (int i = 0; i < n_mdot; ++i) {
+        fin >> mdot_t_grid(i);
+      }
+
+      // load mdot grid
+      for (int i = 0; i < n_mdot; ++i) {
+        fin >> mdot_grid(i);
+      }
+
+      fin.close();
+
+    }//end if mdot_name_is_empty
+
+    // load the read-in table to tde structure
+    mdot_t_data.resize(n_mdot);
+    mdot_data.resize(n_mdot);
+    for (int i = 0; i < n_mdot; ++i) {
+      mdot_t_data[i] = mdot_t_grid(i);
+      mdot_data[i]   = mdot_grid(i);
+    }
+
+    /*//debugging, check mdot read
+    if (global_variable::my_rank==0){
+      std::cout << "[mdot table] n_mdot=" << n_mdot << std::endl;
+      std::cout << "[mdot table] first few rows (t_day, mdot_msunyr):" << std::endl;
+      for (int i = 0; i < 10; ++i) {
+        std::cout << "  i=" << i << "  t=" << mdot_t_data[i] << "  mdot=" << mdot_data[i] << std::endl;
+      }
+    }//end debug*/
+
+  }
+
+  //-------------------------------------
+  //Load the binary file
+  if (!binary_read && !tde.bin_file.empty()){
+    LoadBinaryData(tde, 0);
+  }
+
+  // return if restart
+  if (restart) return;
+
+  // capture variables for the kernel
+  auto &indcs = pmy_mesh_->mb_indcs;
+  int &is = indcs.is; int &ie = indcs.ie;
+  int &js = indcs.js; int &je = indcs.je;
+  int &ks = indcs.ks; int &ke = indcs.ke;
+  int &nscalars = pmbp->phydro->nscalars;
+  int &nhydro = pmbp->phydro->nhydro;
+  auto &coord = pmbp->pcoord->coord_data;
+
+  auto &size = pmbp->pmb->mb_size;
+
+  //extract radiation parameters
+  int nangles_;
+  int nang1;
+  DualArray2D<Real> nh_c_;
+  DvceArray6D<Real> norm_to_tet_, tet_c_, tetcov_c_;
+  DvceArray5D<Real> i0_;
+  if (is_radiation_enabled){
+    nang1 = (pmbp->prad->prgeo->nangles-1);
+    nangles_ = pmbp->prad->prgeo->nangles;
+    nh_c_ = pmbp->prad->nh_c;
+    norm_to_tet_ = pmbp->prad->norm_to_tet;
+    tet_c_ = pmbp->prad->tet_c;
+    tetcov_c_ = pmbp->prad->tetcov_c;
+    i0_ = pmbp->prad->i0;
+  }
+  
+  // initialize Hydro variables ----------------------------------------------------------
+  if (pmbp->phydro != nullptr) {
+    auto &w0_ = pmbp->phydro->w0;
+    auto &u0_ = pmbp->phydro->u0;
+    auto tde_ = tde;
+    Real g_gamma = pmbp->phydro->peos->eos_data.gamma;
+
+    auto binary_data_d = binary_data_device;
+    int binary_nbin1_d = tde_.binary_nbin1;
+    int binary_nbin2_d = tde_.binary_nbin2;
+    int binary_nbin3_d = tde_.binary_nbin3;
+    Real binary_xmax_d = tde_.binary_xmax;
+    Real binary_ymax_d = tde_.binary_ymax;
+    Real binary_zmax_d = tde_.binary_zmax;
+    Real binary_x0_d   = tde_.binary_x0;
+    Real binary_y0_d   = tde_.binary_y0;
+    Real binary_z0_d   = tde_.binary_z0;
+
+    par_for("pgen_tde",DevExeSpace(),0,(pmbp->nmb_thispack-1),ks,ke,js,je,is,ie,
+    KOKKOS_LAMBDA(int m,int k,int j,int i) {
+      Real &x1min = size.d_view(m).x1min;
+      Real &x1max = size.d_view(m).x1max;
+      int nx1 = indcs.nx1;
+      Real x1v = CellCenterX(i-is, nx1, x1min, x1max);
+
+      Real &x2min = size.d_view(m).x2min;
+      Real &x2max = size.d_view(m).x2max;
+      int nx2 = indcs.nx2;
+      Real x2v = CellCenterX(j-js, nx2, x2min, x2max);
+
+      Real &x3min = size.d_view(m).x3min;
+      Real &x3max = size.d_view(m).x3max;
+      int nx3 = indcs.nx3;
+      Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
+
+      // Extract metric and inverse
+      Real glower[4][4], gupper[4][4];
+      ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin,
+			      glower, gupper);
+
+      Real rad = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+      Real den = tde_.d_amb;
+      Real momx = 0.0;
+      Real momy = 0.0;
+      Real momz = 0.0;
+      Real pres = tde_.p_amb;
+
+      //test adding the interpolated data the first two cells
+      if (i<=is+1){
+	den = TrilinearInterpolate(binary_data_d, 0, x1v, x2v, x3v, 
+				   binary_xmax_d, binary_ymax_d, binary_zmax_d,
+				   binary_x0_d, binary_y0_d, binary_z0_d,
+				   binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
+	
+	momx = TrilinearInterpolate(binary_data_d, 1, x1v, x2v, x3v, 
+				   binary_xmax_d, binary_ymax_d, binary_zmax_d,
+				   binary_x0_d, binary_y0_d, binary_z0_d,
+				   binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
+	
+	momy = TrilinearInterpolate(binary_data_d, 2, x1v, x2v, x3v, 
+				   binary_xmax_d, binary_ymax_d, binary_zmax_d,
+				   binary_x0_d, binary_y0_d, binary_z0_d,
+				   binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
+
+	momz = TrilinearInterpolate(binary_data_d, 3, x1v, x2v, x3v, 
+				   binary_xmax_d, binary_ymax_d, binary_zmax_d,
+				   binary_x0_d, binary_y0_d, binary_z0_d,
+				   binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
+
+      }
+      
+      if (rad < 1.0) {
+        den = tde_.dexcise;
+        pres = tde_.pexcise;
+      }
+      w0_(m,IDN,k,j,i) = den;
+      w0_(m,IVX,k,j,i) = 0.0;
+      w0_(m,IVY,k,j,i) = 0.0;
+      w0_(m,IVZ,k,j,i) = 0.0;
+      w0_(m,IEN,k,j,i) = pres/(g_gamma-1.0);
+
+      
+      if (is_radiation_enabled){//copied from gr_torus.cpp, initialize radiation intensity
+        Real temp_init = pres/den;
+        Real urad = tde_.arad * SQR(SQR(temp_init));
+
+        //no initial velocity
+        Real uu1 = 0.0;
+        Real uu2 = 0.0;
+        Real uu3 = 0.0;
+
+        Real q = glower[1][1]*uu1*uu1 + 2.0*glower[1][2]*uu1*uu2 + 2.0*glower[1][3]*uu1*uu3
+          + glower[2][2]*uu2*uu2 + 2.0*glower[2][3]*uu2*uu3
+          + glower[3][3]*uu3*uu3;
+        Real uu0 = sqrt(1.0 + q);
+        Real u_tet_[4]; //velocity in tetrad frame
+        u_tet_[0] = (norm_to_tet_(m,0,0,k,j,i)*uu0 + norm_to_tet_(m,0,1,k,j,i)*uu1 +
+               norm_to_tet_(m,0,2,k,j,i)*uu2 + norm_to_tet_(m,0,3,k,j,i)*uu3);
+        u_tet_[1] = (norm_to_tet_(m,1,0,k,j,i)*uu0 + norm_to_tet_(m,1,1,k,j,i)*uu1 +
+               norm_to_tet_(m,1,2,k,j,i)*uu2 + norm_to_tet_(m,1,3,k,j,i)*uu3);
+        u_tet_[2] = (norm_to_tet_(m,2,0,k,j,i)*uu0 + norm_to_tet_(m,2,1,k,j,i)*uu1 +
+               norm_to_tet_(m,2,2,k,j,i)*uu2 + norm_to_tet_(m,2,3,k,j,i)*uu3);
+        u_tet_[3] = (norm_to_tet_(m,3,0,k,j,i)*uu0 + norm_to_tet_(m,3,1,k,j,i)*uu1 +
+               norm_to_tet_(m,3,2,k,j,i)*uu2 + norm_to_tet_(m,3,3,k,j,i)*uu3);
+
+  
+        // Go through each angle
+        for (int n=0; n<nangles_; ++n) {
+          // Calculate direction in fluid frame
+          Real un_t = (u_tet_[1]*nh_c_.d_view(n,1) + u_tet_[2]*nh_c_.d_view(n,2) +
+                 u_tet_[3]*nh_c_.d_view(n,3)); //nh_c_ 
+          Real n0_f = u_tet_[0]*nh_c_.d_view(n,0) - un_t; //fluid 
+           
+          //// Calculate intensity in tetrad frame
+          Real n0 = tet_c_(m,0,0,k,j,i); 
+          Real n_0 = 0.0;
+          for (int d=0; d<4; ++d) {  
+            n_0 += tetcov_c_(m,d,0,k,j,i)*nh_c_.d_view(n,d);  
+          }
+          //printf("m:%d, n:%d, k:%d, j:%d, i:%d, n0:%g, n_0:%g, n0_f:%g, urad:%g, \n", m, n , k, j,i, n0, n_0, n0_f, urad); 
+          i0_(m,n,k,j,i) = n0*n_0*(urad/(4.0*M_PI))/SQR(SQR(n0_f));//cons
+        }
+  
+      }
+
+      // uniformly fill all scalars to have equal concentration
+      for (int n=nhydro; n<(nhydro+nscalars); ++n) {
+        w0_(m,n,k,j,i) = 0.0;
+        u0_(m,n,k,j,i) = 0.0 * den;
+      }
+      
+      }//ijk
+     );//par for
+
+
+    // Convert primitives to conserved
+    pmbp->phydro->peos->PrimToCons(w0_, pmbp->phydro->u0, is, ie, js, je, ks, ke);
+  }  // End initialization Hydro variables
+
+  // initialize MHD variables ------------------------------------------------------------
+  // if (pmbp->pmhd != nullptr) {
+  // }
+
+  return;
+}
+
+
+//----------------------------------------------------------------------------------------
+//! \fn FixedStreamInflow
+//  \brief Sets boundary condition on surfaces of computational domain
+
+void FixedStreamInflow(Mesh *pm) {
+  auto &indcs = pm->mb_indcs;
+  auto &size = pm->pmb_pack->pmb->mb_size;
+  auto &coord = pm->pmb_pack->pcoord->coord_data;
+  int &ng = indcs.ng;
+  int n1 = indcs.nx1 + 2*ng;
+  int n2 = (indcs.nx2 > 1)? (indcs.nx2 + 2*ng) : 1;
+  int n3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*ng) : 1;
+  int &is = indcs.is;  int &ie  = indcs.ie;
+  int &js = indcs.js;  int &je  = indcs.je;
+  int &ks = indcs.ks;  int &ke  = indcs.ke;
+  auto &mb_bcs = pm->pmb_pack->pmb->mb_bcs;
+  auto tde_ = tde;
+
+  int nmb = pm->pmb_pack->nmb_thispack;
+  auto u0_ = pm->pmb_pack->phydro->u0;
+  auto w0_ = pm->pmb_pack->phydro->w0;
+  Real g_gamma = pm->pmb_pack->phydro->peos->eos_data.gamma;
+
+  // intensity array and n_angle if radiation is enabled
+  const bool is_radiation_enabled = (pm->pmb_pack->prad != nullptr);
+  DvceArray5D<Real> i0_; int nang1;
+  if (is_radiation_enabled) {
+    i0_ = pm->pmb_pack->prad->i0;
+    nang1 = pm->pmb_pack->prad->prgeo->nangles - 1;
+  }
+
+  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,is-ng,is-1,0,(n2-1),0,(n3-1));
+  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,ie+1,ie+ng,0,(n2-1),0,(n3-1));
+
+  // mass fallback rate normalization
+  Real mdot_now_code = 1.0; //actual mdot in code unit
+  if (tde.user_fallback_rate){
+    Real time_now_code = pm->time;
+    GetMdot(tde_, time_now_code, mdot_now_code);
+
+    /*//debug
+    if (global_variable::my_rank==0){
+      Real t_day = pm->time * tde_.t_unit / 3600.0 / 24.0;
+      std::cout << "[GetMdot] t_code=" << pm->time
+                << "  t_day=" << t_day
+                << "  mdot_now_code=" << mdot_now_code << std::endl;
+      //check a random mdot
+      Real t_test = 6000; //in code unit
+      Real mdot_test = 1.0;
+      GetMdot(tde_, t_test, mdot_test);
+      std::cout << "  testing t_test=" << t_test
+                << "  mdot_test=" << mdot_test << std::endl;
+    }//debug*/
+  }
+
+  // additional blocks to bookkeep injection cells, 
+  // store injection cells in device array then copy to host, then print
+  // adapt to PVC nodes (cannot use printf or std::cout within par_for loop)
+  int max_inj = nmb * n2 * n3 * ng;
+  DvceArray2D<Real> inj_cells("inj_cells", (tde_.inj_cell_debug ? max_inj : 1), 5);
+  Kokkos::View<int, DevMemSpace> counter("counter");
+  Kokkos::deep_copy(counter, 0);
+
+  par_for("fixed_x1", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n2-1),0,(ng-1),
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    // inner x1 boundary
+    Real &x1min = size.d_view(m).x1min;
+    Real &x1max = size.d_view(m).x1max;
+    Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+
+    Real &x2min = size.d_view(m).x2min;
+    Real &x2max = size.d_view(m).x2max;
+    Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+
+    Real &x3min = size.d_view(m).x3min;
+    Real &x3max = size.d_view(m).x3max;
+    Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+
+    //Real rho, pgas, uu1, uu2, uu3;
+    if (mb_bcs.d_view(m,BoundaryFace::inner_x1) == BoundaryFlag::user) {
+      //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_,rho,pgas,uu1,uu2,uu3);
+      w0_(m,IDN,k,j,is-i-1) = w0_(m,IDN,k,j,is);
+      w0_(m,IEN,k,j,is-i-1) = w0_(m,IEN,k,j,is);
+      w0_(m,IM1,k,j,is-i-1) = fmin(0.0, w0_(m,IM1,k,j,is));
+      w0_(m,IM2,k,j,is-i-1) = w0_(m,IM2,k,j,is);
+      w0_(m,IM3,k,j,is-i-1) = w0_(m,IM3,k,j,is);
+    }
+
+    // outer x1 boundary
+    x1v = CellCenterX((ie+i+1)-is, indcs.nx1, x1min, x1max);
+
+    if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
+      Real r_now = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+      Real dr_now = std::sqrt(SQR(x1v - tde_.x1_inj) + SQR(x2v - tde_.x2_inj) + SQR(x3v - tde_.x3_inj));
+      w0_(m,IDN,k,j,(ie+i+1)) = w0_(m,IDN,k,j,ie);
+      w0_(m,IEN,k,j,(ie+i+1)) = w0_(m,IEN,k,j,ie);
+      w0_(m,IM1,k,j,(ie+i+1)) = fmax(0.0, w0_(m,IM1,k,j,ie));
+      w0_(m,IM2,k,j,(ie+i+1)) = w0_(m,IM2,k,j,ie);
+      w0_(m,IM3,k,j,(ie+i+1)) = w0_(m,IM3,k,j,ie);
+      
+    }
+
+    // if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
+    //   Real r_now = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+    //   Real dr_now = std::sqrt(SQR(x1v - tde_.x1_inj) + SQR(x2v - tde_.x2_inj) + SQR(x3v - tde_.x3_inj));
+    //   if (dr_now <= tde_.r_inj_thresh_coarse){
+  
+    //     //check density flag
+    //     Real dens_now = tde_.local_dens * (mdot_now_code/tde_.mdot_norm);
+    //     if (tde_.uniform_stream==0){
+    //       dens_now = dens_now * std::exp(-std::pow(dr_now/tde_.h_stream, 2)/2.0);
+    //     }
+    //     //printf("x1v:%g, x2v:%g, x3v:%g, x1inj:%g, x2inj:%g, x3inj:%g, rnow:%g, dr_now:%g, dens_now:%g\n", x1v, x2v, x3v, tde_.x1_inj, tde_.x2_inj, tde_.x3_inj, r_now, dr_now, dens_now);
+    //     if (tde_.inj_cell_debug == 1){
+    //       //Claude suggested using atomic_fetch to make sure each thread has its own writting
+    //       int idx = Kokkos::atomic_fetch_add(&counter(), 1);
+    //       if (idx < max_inj) {
+    //         inj_cells(idx, 0) = x1v;
+    //         inj_cells(idx, 1) = x2v;
+    //         inj_cells(idx, 2) = x3v;
+    //         inj_cells(idx, 3) = dr_now;
+    //         inj_cells(idx, 4) = dens_now;
+    //       }
+
+    //     }//debug block
+
+    //     w0_(m,IDN,k,j,(ie+i+1)) = dens_now;
+    //     w0_(m,IEN,k,j,(ie+i+1)) = dens_now * tde_.local_temp * (g_gamma-1.0);
+    //     w0_(m,IM1,k,j,(ie+i+1)) = tde_.vx1_inj;
+    //     w0_(m,IM2,k,j,(ie+i+1)) = tde_.vx2_inj;
+    //     w0_(m,IM3,k,j,(ie+i+1)) = tde_.vx3_inj;
+
+    //     //printf("i:%d, local density:%g, temp:%g, ein:%g\n", ie+i+1, w0_(m,IDN,k,j,(ie+i+1)), w0_(m,IEN,k,j,(ie+i+1))/w0_(m,IDN,k,j,(ie+i+1))/(g_gamma-1.0), w0_(m,IEN,k,j,(ie+i+1)));
+    //   }else{
+    //     //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_, rho,pgas,uu1,uu2,uu3);
+    //     w0_(m,IDN,k,j,(ie+i+1)) = w0_(m,IDN,k,j,ie);
+    //     w0_(m,IEN,k,j,(ie+i+1)) = w0_(m,IEN,k,j,ie);
+    //     w0_(m,IM1,k,j,(ie+i+1)) = fmax(0.0, w0_(m,IM1,k,j,ie));
+    //     w0_(m,IM2,k,j,(ie+i+1)) = w0_(m,IM2,k,j,ie);
+    //     w0_(m,IM3,k,j,(ie+i+1)) = w0_(m,IM3,k,j,ie);
+    //   }
+    // }
+  });
+
+  // //debug print
+  // if (tde_.inj_cell_debug == 1) {  
+  //   auto inj_host = Kokkos::create_mirror_view_and_copy(HostMemSpace(), inj_cells);
+  //   auto cnt_host = Kokkos::create_mirror_view_and_copy(HostMemSpace(), counter);
+  //   int n_inj = cnt_host();
+  //   for (int ii = 0; ii < n_inj; ii++) {
+  //     std::cout << "inj: x1=" << inj_host(ii,0) << " x2=" << inj_host(ii,1)
+  //               << " x3=" << inj_host(ii,2) << " dr=" << inj_host(ii,3)
+  //               << " dens=" << inj_host(ii,4) << "\n";
+  //   }
+  // }//debug print block
+
+  if (is_radiation_enabled) {
+    // Set X1-BCs on i0 if Meshblock face is at the edge of computational domain
+    par_for("outflow_rad_x1", DevExeSpace(),0,(nmb-1),0,nang1,0,(n3-1),0,(n2-1),
+    KOKKOS_LAMBDA(int m, int n, int k, int j) {
+      if (mb_bcs.d_view(m,BoundaryFace::inner_x1) == BoundaryFlag::user) {
+        for (int i=0; i<ng; ++i) {
+          i0_(m,n,k,j,is-i) = i0_(m,n,k,j,is);
+        }
+      }
+      if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
+        for (int i=0; i<ng; ++i) {
+          i0_(m,n,k,j,ie+i) = i0_(m,n,k,j,ie);
+        }
+      }
+    });
+  }
+
+  // PrimToCons on X1 physical boundary ghost zones
+  pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,is-ng,is-1,0,(n2-1),0,(n3-1));
+  pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,ie+1,ie+ng,0,(n2-1),0,(n3-1));
+
+  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),js-ng,js-1,0,(n3-1));
+  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),je+1,je+ng,0,(n3-1));
+
+  par_for("fixed_x2", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(ng-1),0,(n1-1),
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    // inner x2 boundary
+    Real &x1min = size.d_view(m).x1min;
+    Real &x1max = size.d_view(m).x1max;
+    Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+
+    Real &x2min = size.d_view(m).x2min;
+    Real &x2max = size.d_view(m).x2max;
+    Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+
+    Real &x3min = size.d_view(m).x3min;
+    Real &x3max = size.d_view(m).x3max;
+    Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+
+    //Real rho, pgas, uu1, uu2, uu3;
+    if (mb_bcs.d_view(m,BoundaryFace::inner_x2) == BoundaryFlag::user) {
+      //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_,rho,pgas,uu1,uu2,uu3);
+      w0_(m,IDN,k,js-j-1,i) = w0_(m,IDN,k,js,i);
+      w0_(m,IEN,k,js-j-1,i) = w0_(m,IEN,k,js,i);
+      w0_(m,IM1,k,js-j-1,i) = w0_(m,IM1,k,js,i);
+      w0_(m,IM2,k,js-j-1,i) = fmin(0.0, w0_(m,IM2,k,js,i));
+      w0_(m,IM3,k,js-j-1,i) = w0_(m,IM3,k,js,i);
+    }
+
+    // outer x2 boundary
+    x2v = CellCenterX((je+j+1)-js, indcs.nx2, x2min, x2max);
+
+    if (mb_bcs.d_view(m,BoundaryFace::outer_x2) == BoundaryFlag::user) {
+      
+      w0_(m,IDN,k,(je+j+1),i) = w0_(m,IDN,k,je,i);
+      w0_(m,IEN,k,(je+j+1),i) = w0_(m,IEN,k,je,i);
+      w0_(m,IM1,k,(je+j+1),i) = w0_(m,IM1,k,je,i);
+      w0_(m,IM2,k,(je+j+1),i) = fmax(0.0, w0_(m,IM2,k,je,i));
+      w0_(m,IM3,k,(je+j+1),i) = w0_(m,IM3,k,je,i);
+    }
+  });
+
+  if (is_radiation_enabled) {
+    // Set X2-BCs on i0 if Meshblock face is at the edge of computational domain
+    par_for("outflow_rad_x2", DevExeSpace(),0,(nmb-1),0,nang1,0,(n3-1),0,(n1-1),
+    KOKKOS_LAMBDA(int m, int n, int k, int i) {
+      if (mb_bcs.d_view(m,BoundaryFace::inner_x2) == BoundaryFlag::user) {
+        for (int j=0; j<ng; ++j) {
+          i0_(m,n,k,js-j-1,i) = i0_(m,n,k,js,i);
+        }
+      }
+      if (mb_bcs.d_view(m,BoundaryFace::outer_x2) == BoundaryFlag::user) {
+        for (int j=0; j<ng; ++j) {
+          i0_(m,n,k,je+j+1,i) = i0_(m,n,k,je,i);
+        }
+      }
+    });
+  }//radiation
+
+  pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),js-ng,js-1,0,(n3-1));
+  pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),je+1,je+ng,0,(n3-1));
+
+  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),0,(n2-1),ks-ng,ks-1);
+  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),0,(n2-1),ke+1,ke+ng);
+  par_for("fixed_ix3", DevExeSpace(),0,(nmb-1),0,(ng-1),0,(n2-1),0,(n1-1),
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    // inner x3 boundary
+    Real &x1min = size.d_view(m).x1min;
+    Real &x1max = size.d_view(m).x1max;
+    Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+
+    Real &x2min = size.d_view(m).x2min;
+    Real &x2max = size.d_view(m).x2max;
+    Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+
+    Real &x3min = size.d_view(m).x3min;
+    Real &x3max = size.d_view(m).x3max;
+    Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+
+    //Real rho, pgas, uu1, uu2, uu3;
+    if (mb_bcs.d_view(m,BoundaryFace::inner_x3) == BoundaryFlag::user) {
+      //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_,rho,pgas,uu1,uu2,uu3);
+      w0_(m,IDN,ks-k-1,j,i) = w0_(m,IDN,ks,j,i);
+      w0_(m,IEN,ks-k-1,j,i) = w0_(m,IEN,ks,j,i);
+      w0_(m,IM1,ks-k-1,j,i) = w0_(m,IM1,ks,j,i);
+      w0_(m,IM2,ks-k-1,j,i) = w0_(m,IM2,ks,j,i);
+      w0_(m,IM3,ks-k-1,j,i) = fmin(0.0, w0_(m,IM3,ks,j,i));
+    }
+
+    // outer x3 boundary
+    x3v = CellCenterX((ke+k+1)-ks, indcs.nx3, x3min, x3max);
+
+    if (mb_bcs.d_view(m,BoundaryFace::outer_x3) == BoundaryFlag::user) {
+      //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_,rho,pgas,uu1,uu2,uu3);
+      w0_(m,IDN,(ke+k+1),j,i) = w0_(m,IDN,ke,j,i);
+      w0_(m,IEN,(ke+k+1),j,i) = w0_(m,IEN,ke,j,i);
+      w0_(m,IM1,(ke+k+1),j,i) = w0_(m,IM1,ke,j,i);
+      w0_(m,IM2,(ke+k+1),j,i) = w0_(m,IM2,ke,j,i);
+      w0_(m,IM3,(ke+k+1),j,i) = fmax(0.0, w0_(m,IM3,ke,j,i));
+    }
+  });
+
+  if (is_radiation_enabled) {
+    // Set X3-BCs on i0 if Meshblock face is at the edge of computational domain
+    par_for("outflow_rad_x3", DevExeSpace(),0,(nmb-1),0,nang1,0,(n2-1),0,(n1-1),
+    KOKKOS_LAMBDA(int m, int n, int j, int i) {
+      if (mb_bcs.d_view(m,BoundaryFace::inner_x3) == BoundaryFlag::user) {
+        for (int k=0; k<ng; ++k) {
+          i0_(m,n,ks-k-1,j,i) = i0_(m,n,ks,j,i);
+        }
+      }
+      if (mb_bcs.d_view(m,BoundaryFace::outer_x3) == BoundaryFlag::user) {
+        for (int k=0; k<ng; ++k) {
+          i0_(m,n,ke+k+1,j,i) = i0_(m,n,ke,j,i);
+        }
+      }
+    });
+  }
+
+  pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),0,(n2-1),ks-ng,ks-1);
+  pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),0,(n2-1),ke+1,ke+ng);
+
+  return;
+}
+
+
+
+
+namespace {
+//----------------------------------------------------------------------------------------
+// Function for returning corresponding Boyer-Lindquist coordinates of point
+// Inputs:
+//   x1,x2,x3: global coordinates to be converted
+// Outputs:
+//   pr,ptheta,pphi: variables pointed to set to Boyer-Lindquist coordinates
+
+KOKKOS_INLINE_FUNCTION
+static void GetBoyerLindquistCoordinates(struct tde_pgen pgen,
+                                         Real x1, Real x2, Real x3,
+                                         Real *pr, Real *ptheta, Real *pphi) {
+  Real rad = sqrt(SQR(x1) + SQR(x2) + SQR(x3));
+  Real r = fmax((sqrt( SQR(rad) - SQR(pgen.spin) + sqrt(SQR(SQR(rad)-SQR(pgen.spin))
+                      + 4.0*SQR(pgen.spin)*SQR(x3)) ) / sqrt(2.0)), 1.0);
+  *pr = r;
+  *ptheta = (fabs(x3/r) < 1.0) ? acos(x3/r) : acos(copysign(1.0, x3));
+  *pphi = atan2(r*x2-pgen.spin*x1, pgen.spin*x2+r*x1) -
+          pgen.spin*r/(SQR(r)-2.0*r+SQR(pgen.spin));
+  return;
+}
+
+}//namespace
+
+
+//----------------------------------------------------------------------------------------
+// Function for computing accretion fluxes through constant spherical KS radius surfaces, from gr_torus pgen
+
+void TDEFluxes(HistoryData *pdata, Mesh *pm) {
+  MeshBlockPack *pmbp = pm->pmb_pack;
+
+  // extract BH parameters
+  bool &flat = pmbp->pcoord->coord_data.is_minkowski;
+  Real &spin = pmbp->pcoord->coord_data.bh_spin;
+
+  // set nvars, adiabatic index, primitive array w0, and field array bcc0 if is_mhd
+  int nvars; Real gamma; bool is_mhd = false;
+  DvceArray5D<Real> w0_, bcc0_;
+  //debug
+  DvceArray5D<Real> u0_;
+  if (pmbp->phydro != nullptr) {
+    nvars = pmbp->phydro->nhydro + pmbp->phydro->nscalars;
+    gamma = pmbp->phydro->peos->eos_data.gamma;
+    w0_ = pmbp->phydro->w0;
+    u0_ = pmbp->phydro->u0;
+  } else if (pmbp->pmhd != nullptr) {
+    is_mhd = true;
+    nvars = pmbp->pmhd->nmhd + pmbp->pmhd->nscalars;
+    gamma = pmbp->pmhd->peos->eos_data.gamma;
+    w0_ = pmbp->pmhd->w0;
+    bcc0_ = pmbp->pmhd->bcc0;
+    u0_ = pmbp->pmhd->u0;
+  }
+
+  // Calculate conversion for P to e if using DynGRMHD.
+  Real to_ien = 1.;
+  if (pmbp->pdyngr != nullptr) {
+    to_ien = 1.0 / (gamma - 1.);
+  }//IEN stores pressure instead of internal energy in dynamical GR
+
+  // extract grids, number of radii, number of fluxes, and history appending index
+  auto &grids = pm->pgen->spherical_grids; //this is the vector spehrical grid defined earlier
+  int nradii = grids.size();
+  int nflux = (is_mhd) ? 4 : 3;
+
+  // set number of and names of history variables for hydro or mhd
+  //  (1) mass accretion rate
+  //  (2) energy flux
+  //  (3) angular momentum flux
+  //  (4) magnetic flux (iff MHD)
+  // add one more entry for injection mass flux
+  pdata->nhist = nradii*nflux + 1;
+  if (pdata->nhist > NHISTORY_VARIABLES) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+              << std::endl << "User history function specified pdata->nhist larger than"
+              << " NHISTORY_VARIABLES" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  for (int g=0; g<nradii; ++g) {
+    std::stringstream stream;
+    stream << std::fixed << std::setprecision(1) << grids[g]->radius;
+    std::string rad_str = stream.str();
+    pdata->label[nflux*g+0] = "mdot_" + rad_str;
+    pdata->label[nflux*g+1] = "edot_" + rad_str;
+    pdata->label[nflux*g+2] = "ldot_" + rad_str;
+    if (is_mhd) {
+      pdata->label[nflux*g+3] = "phi_" + rad_str;
+    }
+  }
+
+
+  // go through angles at each radii:
+  DualArray2D<Real> interpolated_bcc;  // needed for MHD
+  for (int g=0; g<nradii; ++g) {
+    // zero fluxes at this radius
+    pdata->hdata[nflux*g+0] = 0.0;
+    pdata->hdata[nflux*g+1] = 0.0;
+    pdata->hdata[nflux*g+2] = 0.0;
+    if (is_mhd) pdata->hdata[nflux*g+3] = 0.0;
+
+    // interpolate primitives (and cell-centered magnetic fields iff mhd)
+    if (is_mhd) {
+      grids[g]->InterpolateToSphere(3, bcc0_);
+      Kokkos::realloc(interpolated_bcc, grids[g]->nangles, 3);
+      Kokkos::deep_copy(interpolated_bcc, grids[g]->interp_vals);
+      interpolated_bcc.template modify<DevExeSpace>();
+      interpolated_bcc.template sync<HostMemSpace>();
+    }
+    // std::cout<<" "<<std::endl;
+    // std::cout<<"in pgen history, calling interpolation: "<<std::endl;
+    grids[g]->InterpolateToSphere(nvars, w0_);
+
+    // compute fluxes
+    for (int n=0; n<grids[g]->nangles; ++n) {//loop over solid angle domega
+      // extract coordinate data at this angle
+      Real r = grids[g]->radius;
+      Real theta = grids[g]->polar_pos.h_view(n,0);
+      Real phi = grids[g]->polar_pos.h_view(n,1);
+      Real x1 = grids[g]->interp_coord.h_view(n,0);
+      Real x2 = grids[g]->interp_coord.h_view(n,1);
+      Real x3 = grids[g]->interp_coord.h_view(n,2);
+      Real glower[4][4], gupper[4][4];
+      ComputeMetricAndInverse(x1,x2,x3,flat,spin,glower,gupper);
+
+      // extract interpolated primitives
+      Real &int_dn = grids[g]->interp_vals.h_view(n,IDN);
+      Real &int_vx = grids[g]->interp_vals.h_view(n,IVX);
+      Real &int_vy = grids[g]->interp_vals.h_view(n,IVY);
+      Real &int_vz = grids[g]->interp_vals.h_view(n,IVZ);
+      Real int_ie = grids[g]->interp_vals.h_view(n,IEN)*to_ien;
+
+      // extract interpolated field components (iff is_mhd)
+      Real int_bx = 0.0, int_by = 0.0, int_bz = 0.0;
+      if (is_mhd) {
+        int_bx = interpolated_bcc.h_view(n,IBX);
+        int_by = interpolated_bcc.h_view(n,IBY);
+        int_bz = interpolated_bcc.h_view(n,IBZ);
+      }
+
+      // Compute interpolated u^\mu in CKS
+      // convert to full four-velocity
+      Real q = glower[1][1]*int_vx*int_vx + 2.0*glower[1][2]*int_vx*int_vy +
+               2.0*glower[1][3]*int_vx*int_vz + glower[2][2]*int_vy*int_vy +
+               2.0*glower[2][3]*int_vy*int_vz + glower[3][3]*int_vz*int_vz;
+      Real alpha = sqrt(-1.0/gupper[0][0]);
+      Real lor = sqrt(1.0 + q);
+      Real u0 = lor/alpha;
+      Real u1 = int_vx - alpha * lor * gupper[0][1];
+      Real u2 = int_vy - alpha * lor * gupper[0][2];
+      Real u3 = int_vz - alpha * lor * gupper[0][3];
+
+      // Lower vector indices
+      Real u_0 = glower[0][0]*u0 + glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
+      Real u_1 = glower[1][0]*u0 + glower[1][1]*u1 + glower[1][2]*u2 + glower[1][3]*u3;
+      Real u_2 = glower[2][0]*u0 + glower[2][1]*u1 + glower[2][2]*u2 + glower[2][3]*u3;
+      Real u_3 = glower[3][0]*u0 + glower[3][1]*u1 + glower[3][2]*u2 + glower[3][3]*u3;
+
+      // Calculate 4-magnetic field (returns zero if not MHD), fluid frame
+      Real b0 = u_1*int_bx + u_2*int_by + u_3*int_bz;
+      Real b1 = (int_bx + b0 * u1) / u0;
+      Real b2 = (int_by + b0 * u2) / u0;
+      Real b3 = (int_bz + b0 * u3) / u0;
+
+      // compute b_\mu in CKS and b_sq (returns zero if not MHD)
+      Real b_0 = glower[0][0]*b0 + glower[0][1]*b1 + glower[0][2]*b2 + glower[0][3]*b3;
+      Real b_1 = glower[1][0]*b0 + glower[1][1]*b1 + glower[1][2]*b2 + glower[1][3]*b3;
+      Real b_2 = glower[2][0]*b0 + glower[2][1]*b1 + glower[2][2]*b2 + glower[2][3]*b3;
+      Real b_3 = glower[3][0]*b0 + glower[3][1]*b1 + glower[3][2]*b2 + glower[3][3]*b3;
+      Real b_sq = b0*b_0 + b1*b_1 + b2*b_2 + b3*b_3;
+
+      // Transform CKS 4-velocity and 4-magnetic field to spherical KS
+      Real a2 = SQR(spin);
+      Real rad2 = SQR(x1)+SQR(x2)+SQR(x3);
+      Real r2 = SQR(r);
+      Real sth = sin(theta);
+      Real sph = sin(phi);
+      Real cph = cos(phi);
+      Real drdx = r*x1/(2.0*r2 - rad2 + a2);
+      Real drdy = r*x2/(2.0*r2 - rad2 + a2);
+      Real drdz = (r*x3 + a2*x3/r)/(2.0*r2-rad2+a2);
+      // contravariant r component of 4-velocity
+      Real ur  = drdx *u1 + drdy *u2 + drdz *u3;
+      // contravariant r component of 4-magnetic field (returns zero if not MHD)
+      Real br  = drdx *b1 + drdy *b2 + drdz *b3;
+      // covariant phi component of 4-velocity
+      Real u_ph = (-r*sph-spin*cph)*sth*u_1 + (r*cph-spin*sph)*sth*u_2;
+      // covariant phi component of 4-magnetic field (returns zero if not MHD)
+      Real b_ph = (-r*sph-spin*cph)*sth*b_1 + (r*cph-spin*sph)*sth*b_2;
+
+      // integration params
+      Real &domega = grids[g]->solid_angles.h_view(n);
+      Real sqrtmdet = (r2+SQR(spin*cos(theta)));
+
+      // compute area/mass flux
+      pdata->hdata[nflux*g+0] += -1.0*int_dn*ur*sqrtmdet*domega; //Newt: - rho * u_r * r * domega
+
+      // compute energy flux
+      Real t1_0 = (int_dn + gamma*int_ie + b_sq)*ur*u_0 - br*b_0;
+      pdata->hdata[nflux*g+1] += -1.0*t1_0*sqrtmdet*domega;
+
+      // compute angular momentum flux
+      Real t1_3 = (int_dn + gamma*int_ie + b_sq)*ur*u_ph - br*b_ph;
+      pdata->hdata[nflux*g+2] += t1_3*sqrtmdet*domega;
+
+      // compute magnetic flux
+      if (is_mhd) {
+        pdata->hdata[nflux*g+3] += 0.5*fabs(br*u0 - b0*ur)*sqrtmdet*domega;
+      }
+
+      // //debug, check primitive/conservative
+      // if (g==1 and int_dn>0.0){
+      //  std::cout<<"g="<<g<<", n="<<n<<", r="<<r<<", theta="<<theta<<", phi="<<phi<<", interp_x1="<<x1<<", interp_x2="<<x2<<", interp_x3="<<x3<<", int_dn="<<int_dn<<", int_vx="<<int_vx<<", int_vy="<<int_vy<<", int_vz="<<int_vz<<", ur="<<ur<<", u1="<<u1<<", u2="<<u2<<", u3="<<u3<<std::endl;
+      // }//debug
+      
+    }
+  }
+
+  // add boundary injection entry
+  pdata->label[nradii*nflux] = "mdot_inj";
+  // capture mesh varialbes
+  auto &indcs = pm->mb_indcs;
+  auto &size = pmbp->pmb->mb_size;
+  auto &mb_bcs = pmbp->pmb->mb_bcs;
+  int &is = indcs.is;  int &ie = indcs.ie;
+  int &js = indcs.js;
+  int &ks = indcs.ks;
+  int ng = indcs.ng;
+  int n2 = indcs.nx2 + 2*ng;
+  int n3 = indcs.nx3 + 2*ng;
+  int nmb = pmbp->nmb_thispack;
+  auto tde_ = tde;
+
+  Real mdot_inj = 0.0;
+  Kokkos::parallel_reduce("mdot_inj",
+    Kokkos::MDRangePolicy<Kokkos::Rank<3>>({0,0,0},{nmb,n3,n2}),
+    KOKKOS_LAMBDA(int m, int k, int j, Real &lsum) {
+      if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
+        Real x1v = CellCenterX((ie+1)-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+        Real x2v = CellCenterX(j-js,      indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+        Real x3v = CellCenterX(k-ks,      indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+        Real dr_now = sqrt(SQR(x1v-tde_.x1_inj)+SQR(x2v-tde_.x2_inj)+SQR(x3v-tde_.x3_inj));
+        if (dr_now <= tde_.r_inj_thresh_coarse) {
+          Real dx2 = (size.d_view(m).x2max - size.d_view(m).x2min) / indcs.nx2;
+          Real dx3 = (size.d_view(m).x3max - size.d_view(m).x3min) / indcs.nx3;
+          lsum += tde_.local_dens * fabs(tde_.vx1_inj) * dx2 * dx3;
+        }
+      }
+    }, mdot_inj);
+#ifdef MPI_PARALLEL
+  MPI_Allreduce(MPI_IN_PLACE, &mdot_inj, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
+  pdata->hdata[nradii*nflux] = mdot_inj;
+
+  // fill rest of the_array with zeros, if nhist < NHISTORY_VARIABLES
+  for (int n=pdata->nhist; n<NHISTORY_VARIABLES; ++n) {
+    pdata->hdata[n] = 0.0;
+  }
+
+  return;
+}
+
+namespace{
+//----------------------------------------------------------------------------------------
+// Function to interpolate mdot table
+// input t_now, mdot_now are in code unit, tables are in c.g.s unit, 
+// unit conversion included in this function
+void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now){
+
+  // table time unit is day
+  Real t_now_day = t_now * tde.t_unit / 3600.0 / 24.0;
+  Real mdot_now_msunyr = 0.0;
+
+  int n = tde.n_mdot;
+  // lower and upper limit
+  if (t_now_day <= mdot_t_data[0]){
+    mdot_now_msunyr = mdot_data[0];
+  }else if(t_now_day >= mdot_t_data[n-1]){
+    mdot_now_msunyr = mdot_data[n-1];
+  }else{
+    // binary search for bracket
+    int lo = 0, hi = n - 1;
+
+    while (hi - lo > 1) {
+      int mid = (lo + hi) / 2;
+      if (mdot_t_data[mid] <= t_now_day){
+        lo = mid; 
+      }else{ 
+        hi = mid;
+      }
+    }//end while
+
+    Real f = (t_now_day - mdot_t_data[lo]) / (mdot_t_data[hi] - mdot_t_data[lo]);
+    // table mdot is in msun/yr
+    mdot_now_msunyr = mdot_data[lo] + f * (mdot_data[hi] - mdot_data[lo]);
+  } 
+
+  // to code unit, cgs the same as unit.hpp
+  Real msun_cgs = 1.98841586e+33;
+  Real yr_cgs = 3.15576e+7;
+  mdot_now = mdot_now_msunyr * (msun_cgs / yr_cgs) / (tde.m_unit / tde.t_unit);
+
+}
+
+//---------------------------------------------------------------------------------------
+//Function to load the binary file and fill the structure binary_data_device array
+ void LoadBinaryData(const tde_pgen &tde, int time_idx){
+  
+  // Open binary file using standard C I/O
+  FILE* fp = std::fopen(tde.bin_file.c_str(), "rb");
+  if (fp == nullptr) {
+    if (global_variable::my_rank == 0) {
+      std::cout << "Warning: Binary file '" << tde.bin_file 
+		<< "' could not be opened for inner boundary condition" << std::endl;
+    }
+    binary_read = true; // Mark as read to avoid repeated attempts
+    return;
+  }
+    
+  int binary_n_time = tde.binary_n_time; // Number of time snapshots in binary data
+  int binary_n_vars = tde.binary_n_vars; //Number of variables in binary data
+  int binary_nbin1_ = tde.binary_nbin1;
+  int binary_nbin2_ = tde.binary_nbin2;
+  int binary_nbin3_ = tde.binary_nbin3;
+
+  //here used 1 instead of n_time as this is a single slice
+  HostArray5D<Real> binary_data_host("binary_data_host", binary_n_time, binary_n_vars, 
+                                      binary_nbin3_, binary_nbin2_, binary_nbin1_);
+
+  // Read data from binary file (assume we want the the time_idx slice)
+  std::size_t elements_to_read = binary_data_host.size();
+  std::size_t elements_read = std::fread(binary_data_host.data(), sizeof(Real), elements_to_read, fp);
+
+  // // Simple debug to check the elements are read in correctly
+  // if (global_variable::my_rank == 0) {
+  //   // std::cout << "Sample host values: "
+  //   // 		<< binary_data_host(0, 0, 33, 32, 32) << ", "
+  //   // 		<< binary_data_host(0, 0, 32, 33, 32) << ", "
+  //   // 		<< binary_data_host(0, 0, 32, 32, 33) << std::endl;
+  //   for (int v = 0; v < binary_n_vars; v++) {
+  // 	std::cout << "var " << v << " value: "
+  //           << binary_data_host(0, v, 32, 32, 32) << std::endl;
+  //   }
+  
+  // }
+  // //check binary size
+  // std::fseek(fp, 0, SEEK_END);
+  // std::cout<<"File size (bytes): "<<std::ftell(fp)<<std::endl;
+  // std::rewind(fp);
+  // std::cout<<"elements_to_read*size of Real number: "<<elements_to_read * sizeof(Real)<<std::endl;
+  
+  if (elements_read != elements_to_read) {
+    if (global_variable::my_rank == 0) {
+      std::cout << "Warning: Read " << elements_read << " elements, expected " 
+		<< elements_to_read << " from binary file '" << tde.bin_file << "'" << std::endl;
+    }
+  }
+
+  // Reallocate device array with correct dimensions and copy data
+  // The code tries to free binary_data_device after kokkos:finalize() bc it's a static array, giving seg fault at end 
+  Kokkos::realloc(binary_data_device, 1, binary_n_vars, binary_nbin3_, binary_nbin2_, binary_nbin1_);
+  auto host_slice = Kokkos::subview(binary_data_host, time_idx, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL);
+  auto device_slice = Kokkos::subview(binary_data_device, 0, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL);
+  Kokkos::deep_copy(device_slice, host_slice);
+
+  std::fclose(fp);
+  binary_read = true;
+  
+  if (global_variable::my_rank == 0) {
+    std::cout << "Binary data loaded from '" << tde.bin_file 
+	      << "' for initialize the in-domain data" << std::endl;
+    std::cout << "Binary data dimensions: " << binary_n_time << " Snapshots, "
+	      << binary_n_vars << " variables, "
+	      << binary_nbin1_ << " x " << binary_nbin2_ << " x " << binary_nbin3_ 
+	      << " cells" << std::endl;
+  }
+  
+ 
+}
+ 
+//----------------------------------------------------------------------------------------
+// Device function for trilinear interpolation
+
+KOKKOS_INLINE_FUNCTION Real TrilinearInterpolate(const DvceArray5D<Real>& data_array, int var_idx, Real x, Real y, Real z, Real xmax, Real ymax, Real zmax, Real x0, Real y0, Real z0, int nx, int ny, int nz) {
+  
+  // Map physical coordinates to array indices (continuous)
+  Real fx = (x - x0 + xmax) / (2.0 * xmax) * (nx - 1);
+  Real fy = (y - y0 + ymax) / (2.0 * ymax) * (ny - 1);
+  Real fz = (z - z0 + zmax) / (2.0 * zmax) * (nz - 1);
+  
+  // Check bounds
+  if (fx < 0.0 || fx >= nx-1 || fy < 0.0 || fy >= ny-1 || fz < 0.0 || fz >= nz-1) {
+    return 1.0e-20; // Return default value if outside bounds
+  }
+  
+  // Get integer indices and fractional parts
+  int i0 = static_cast<int>(fx);
+  int j0 = static_cast<int>(fy);
+  int k0 = static_cast<int>(fz);
+  int i1 = std::min(i0 + 1, nx - 1);
+  int j1 = std::min(j0 + 1, ny - 1);
+  int k1 = std::min(k0 + 1, nz - 1);
+  
+  Real dx = fx - i0;
+  Real dy = fy - j0;
+  Real dz = fz - k0;
+  
+  // Trilinear interpolation
+  Real c000 = data_array(0, var_idx, k0, j0, i0);
+  Real c001 = data_array(0, var_idx, k0, j0, i1);
+  Real c010 = data_array(0, var_idx, k0, j1, i0);
+  Real c011 = data_array(0, var_idx, k0, j1, i1);
+  Real c100 = data_array(0, var_idx, k1, j0, i0);
+  Real c101 = data_array(0, var_idx, k1, j0, i1);
+  Real c110 = data_array(0, var_idx, k1, j1, i0);
+  Real c111 = data_array(0, var_idx, k1, j1, i1);
+  
+  Real c00 = c000 * (1.0 - dx) + c001 * dx;
+  Real c01 = c010 * (1.0 - dx) + c011 * dx;
+  Real c10 = c100 * (1.0 - dx) + c101 * dx;
+  Real c11 = c110 * (1.0 - dx) + c111 * dx;
+  
+  Real c0 = c00 * (1.0 - dy) + c01 * dy;
+  Real c1 = c10 * (1.0 - dy) + c11 * dy;
+
+  //std::cout<<"k0: "<<k0<<" j0: "<<j0<<" i0: "<<i0<<" k1: "<<k1<<" j1: "<<j1<<" i1: "<<i1<<" c000: "<<c000<<" c001: "<<c001<<std::endl;
+  
+  return c0 * (1.0 - dz) + c1 * dz;
+}
+
+
+}//namespace
