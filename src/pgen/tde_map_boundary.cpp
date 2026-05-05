@@ -36,10 +36,6 @@
 #include <fstream>
 
 namespace{
-KOKKOS_INLINE_FUNCTION
-static void GetBoyerLindquistCoordinates(struct tde_pgen pgen,
-                                         Real x1, Real x2, Real x3,
-                                         Real *pr, Real *ptheta, Real *pphi);
 
 struct tde_pgen{
   Real spin;                // black hole spin
@@ -215,17 +211,17 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   // set user boundary bondition, effective is diode in three directions now
   user_bcs_func = FixedStreamInflow;
 
-  // Spherical Grid for user-defined history, copied from gr_torus
-  auto &grids = spherical_grids;
-  const Real rflux = (is_radiation_enabled) ? ceil(r_excise + 1.0) : 1.0 + sqrt(1.0 - SQR(tde.spin));
-  int sph_grid_level = 6;
-  grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, rflux)); //spherical grid level is 5 levels
-  // NOTE(@pdmullen): Enroll additional radii for flux analysis by
-  // pushing back the grids vector with additional SphericalGrid instances
-  grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, tde.hst_radii_1));
-  grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, tde.hst_radii_2));
+  // // Spherical Grid for user-defined history, copied from gr_torus
+  // auto &grids = spherical_grids;
+  // const Real rflux = (is_radiation_enabled) ? ceil(r_excise + 1.0) : 1.0 + sqrt(1.0 - SQR(tde.spin));
+  // int sph_grid_level = 6;
+  // grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, rflux)); //spherical grid level is 5 levels
+  // // NOTE(@pdmullen): Enroll additional radii for flux analysis by
+  // // pushing back the grids vector with additional SphericalGrid instances
+  // grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, tde.hst_radii_1));
+  // grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, tde.hst_radii_2));
 
-  user_hist_func = TDEFluxes;
+  // user_hist_func = TDEFluxes;
 
   //-------------------------------
   // load opacity table, write them into an opacitydata instance, so all devices can access to them
@@ -474,7 +470,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin,
 			      glower, gupper);
 
-      Real rad = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+      Real rad = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
       Real den = tde_.d_amb;
       Real momx = 0.0;
       Real momy = 0.0;
@@ -673,8 +669,8 @@ void FixedStreamInflow(Mesh *pm) {
     x1v = CellCenterX((ie+i+1)-is, indcs.nx1, x1min, x1max);
 
     if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
-      Real r_now = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
-      Real dr_now = std::sqrt(SQR(x1v - tde_.x1_inj) + SQR(x2v - tde_.x2_inj) + SQR(x3v - tde_.x3_inj));
+      Real r_now = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+      Real dr_now = sqrt(SQR(x1v - tde_.x1_inj) + SQR(x2v - tde_.x2_inj) + SQR(x3v - tde_.x3_inj));
       w0_(m,IDN,k,j,(ie+i+1)) = w0_(m,IDN,k,j,ie);
       w0_(m,IEN,k,j,(ie+i+1)) = w0_(m,IEN,k,j,ie);
       w0_(m,IM1,k,j,(ie+i+1)) = fmax(0.0, w0_(m,IM1,k,j,ie));
@@ -881,33 +877,6 @@ void FixedStreamInflow(Mesh *pm) {
 
   return;
 }
-
-
-
-
-namespace {
-//----------------------------------------------------------------------------------------
-// Function for returning corresponding Boyer-Lindquist coordinates of point
-// Inputs:
-//   x1,x2,x3: global coordinates to be converted
-// Outputs:
-//   pr,ptheta,pphi: variables pointed to set to Boyer-Lindquist coordinates
-
-KOKKOS_INLINE_FUNCTION
-static void GetBoyerLindquistCoordinates(struct tde_pgen pgen,
-                                         Real x1, Real x2, Real x3,
-                                         Real *pr, Real *ptheta, Real *pphi) {
-  Real rad = sqrt(SQR(x1) + SQR(x2) + SQR(x3));
-  Real r = fmax((sqrt( SQR(rad) - SQR(pgen.spin) + sqrt(SQR(SQR(rad)-SQR(pgen.spin))
-                      + 4.0*SQR(pgen.spin)*SQR(x3)) ) / sqrt(2.0)), 1.0);
-  *pr = r;
-  *ptheta = (fabs(x3/r) < 1.0) ? acos(x3/r) : acos(copysign(1.0, x3));
-  *pphi = atan2(r*x2-pgen.spin*x1, pgen.spin*x2+r*x1) -
-          pgen.spin*r/(SQR(r)-2.0*r+SQR(pgen.spin));
-  return;
-}
-
-}//namespace
 
 
 //----------------------------------------------------------------------------------------
@@ -1202,6 +1171,7 @@ void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now){
     binary_read = true; // Mark as read to avoid repeated attempts
     return;
   }
+  std::cout<<"called load binary"<<std::endl;
     
   int binary_n_time = tde.binary_n_time; // Number of time snapshots in binary data
   int binary_n_vars = tde.binary_n_vars; //Number of variables in binary data
@@ -1283,9 +1253,9 @@ KOKKOS_INLINE_FUNCTION Real TrilinearInterpolate(const DvceArray5D<Real>& data_a
   int i0 = static_cast<int>(fx);
   int j0 = static_cast<int>(fy);
   int k0 = static_cast<int>(fz);
-  int i1 = std::min(i0 + 1, nx - 1);
-  int j1 = std::min(j0 + 1, ny - 1);
-  int k1 = std::min(k0 + 1, nz - 1);
+  int i1 = Kokkos::min(i0 + 1, nx - 1);
+  int j1 = Kokkos::min(j0 + 1, ny - 1);
+  int k1 = Kokkos::min(k0 + 1, nz - 1);
   
   Real dx = fx - i0;
   Real dy = fy - j0;

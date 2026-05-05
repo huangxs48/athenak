@@ -68,8 +68,10 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
   // Index layout: c2p_flags(flag_idx, m, k, j, i)  where flag_idx = 0..4
   DvceArray5D<bool> c2p_flags;
   if (debug_eos_statistic==1 && !only_testfloors) {
+    // Use cons dimensions, not fofc_ — fofc is (1,1,1,1) when use_fofc=false.
+    // cons is indexed (m, var, k, j, i), so extents 0,2,3,4 give nmb,n3,n2,n1.
     c2p_flags = DvceArray5D<bool>("c2p_flags", 5,
-                  fofc_.extent(0), fofc_.extent(1), fofc_.extent(2), fofc_.extent(3));
+                  cons.extent(0), cons.extent(2), cons.extent(3), cons.extent(4));
   }
   auto eos = eos_data;
   Real gm1 = eos_data.gamma - 1.0;
