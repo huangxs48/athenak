@@ -107,10 +107,10 @@ void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now);
 
 //binary data storage
 bool binary_read = false;
-static DvceArray5D<Real> binary_data_device("binary_data_device", 1, 1, 1, 1, 1);
+DvceArray5D<Real> binary_data_device;
 
 //function to fill the read-in binary data
- void LoadBinaryData(const tde_pgen &tde, int time_idx);
+void LoadBinaryData(const tde_pgen &tde, int time_idx);
  
 //function to interpolate a grid point in the domain locates at x,y,z
 //using values from a 5D data_array with shape (N_time, N_var, nx, ny, nz)
