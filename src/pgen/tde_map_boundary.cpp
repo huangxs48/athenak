@@ -91,6 +91,9 @@ struct tde_pgen{
   Real binary_x0; //binary file center
   Real binary_y0; //binary file center
   Real binary_z0; //binary file center
+  Real read_dens_thresh; //density thresh that assigning velocity
+  Real read_vel_thresh; //velocity thresh when converting mom->vel
+  Real read_temp; //assigning temperature to injecting cells
 
 };
 tde_pgen tde;
@@ -183,6 +186,9 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   tde.binary_z0 = pin->GetOrAddReal("problem", "binary_z0", 0.0); //in rg 
   tde.binary_n_vars = pin->GetOrAddInteger("problem", "binary_n_vars", 4);
   tde.binary_n_time = pin->GetOrAddInteger("problem", "binary_n_time", 1);
+  tde.read_dens_thresh = pin->GetOrAddReal("problem", "read_dens_thresh", 1.0e-10);
+  tde.read_vel_thresh = pin->GetOrAddReal("problem", "read_vel_thresh", 0.8);
+  tde.read_temp = pin->GetOrAddReal("problem", "read_temp", 1.0e-8);
 
   //if radiation
   if (pmbp->prad != nullptr){
@@ -448,6 +454,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     Real binary_y0_d   = tde_.binary_y0;
     Real binary_z0_d   = tde_.binary_z0;
 
+    Real domain_x1min = pmy_mesh_->mesh_size.x1min;
+    
     par_for("pgen_tde",DevExeSpace(),0,(pmbp->nmb_thispack-1),ks,ke,js,je,is,ie,
     KOKKOS_LAMBDA(int m,int k,int j,int i) {
       Real &x1min = size.d_view(m).x1min;
@@ -476,9 +484,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       Real momy = 0.0;
       Real momz = 0.0;
       Real pres = tde_.p_amb;
+      Real temp_amb = tde_.p_amb/tde_.d_amb;
 
       //test adding the interpolated data the first two cells
-      if (i<=is+1){
+      if (size.d_view(m).x1min==domain_x1min && i<=is+1){
 	den = TrilinearInterpolate(binary_data_d, 0, x1v, x2v, x3v, 
 				   binary_xmax_d, binary_ymax_d, binary_zmax_d,
 				   binary_x0_d, binary_y0_d, binary_z0_d,
@@ -505,16 +514,25 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
         den = tde_.dexcise;
         pres = tde_.pexcise;
       }
+
+      Real velx = 0.0, vely=0.0, velz=0.0;
+      if (den > tde_.read_dens_thresh){ //only assign velocity to gas with density larger than threshold
+	velx = std::min(momx/den, tde_.read_vel_thresh); //velocity cap at read_vel_thresh
+	vely = std::min(momy/den, tde_.read_vel_thresh); //velocity cap at read_vel_thresh
+	velz = std::min(momz/den, tde_.read_vel_thresh); //velocity cap at read_vel_thresh
+	pres = den * tde_.read_temp;
+      }
+      
       w0_(m,IDN,k,j,i) = den;
-      w0_(m,IVX,k,j,i) = 0.0;
-      w0_(m,IVY,k,j,i) = 0.0;
-      w0_(m,IVZ,k,j,i) = 0.0;
+      w0_(m,IVX,k,j,i) = velx;
+      w0_(m,IVY,k,j,i) = vely;
+      w0_(m,IVZ,k,j,i) = velz;
       w0_(m,IEN,k,j,i) = pres/(g_gamma-1.0);
 
       
       if (is_radiation_enabled){//copied from gr_torus.cpp, initialize radiation intensity
-        Real temp_init = pres/den;
-        Real urad = tde_.arad * SQR(SQR(temp_init));
+        //Real temp_init = pres/den;
+        Real urad = tde_.arad * SQR(SQR(temp_amb));
 
         //no initial velocity
         Real uu1 = 0.0;
@@ -739,12 +757,12 @@ void FixedStreamInflow(Mesh *pm) {
     KOKKOS_LAMBDA(int m, int n, int k, int j) {
       if (mb_bcs.d_view(m,BoundaryFace::inner_x1) == BoundaryFlag::user) {
         for (int i=0; i<ng; ++i) {
-          i0_(m,n,k,j,is-i) = i0_(m,n,k,j,is);
+          i0_(m,n,k,j,is-i-1) = i0_(m,n,k,j,is);
         }
       }
       if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
         for (int i=0; i<ng; ++i) {
-          i0_(m,n,k,j,ie+i) = i0_(m,n,k,j,ie);
+          i0_(m,n,k,j,ie+i+1) = i0_(m,n,k,j,ie);
         }
       }
     });

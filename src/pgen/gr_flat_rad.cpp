@@ -656,12 +656,12 @@ void FixedStreamInflow(Mesh *pm) {
     KOKKOS_LAMBDA(int m, int n, int k, int j) {
       if (mb_bcs.d_view(m,BoundaryFace::inner_x1) == BoundaryFlag::user) {
         for (int i=0; i<ng; ++i) {
-          i0_(m,n,k,j,is-i) = i0_(m,n,k,j,is);
+          i0_(m,n,k,j,is-i-1) = i0_(m,n,k,j,is);
         }
       }
       if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
         for (int i=0; i<ng; ++i) {
-          i0_(m,n,k,j,ie+i) = i0_(m,n,k,j,ie);
+          i0_(m,n,k,j,ie+i+1) = i0_(m,n,k,j,ie);
         }
       }
     });
