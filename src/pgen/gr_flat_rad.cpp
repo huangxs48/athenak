@@ -573,7 +573,7 @@ void FixedStreamInflow(Mesh *pm) {
     // inner x1 boundary
     Real &x1min = size.d_view(m).x1min;
     Real &x1max = size.d_view(m).x1max;
-    Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+    Real x1v = CellCenterX((i-is-1)-is, indcs.nx1, x1min, x1max);
 
     Real &x2min = size.d_view(m).x2min;
     Real &x2max = size.d_view(m).x2max;

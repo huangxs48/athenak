@@ -94,6 +94,9 @@ struct tde_pgen{
   Real read_dens_thresh; //density thresh that assigning velocity
   Real read_vel_thresh; //velocity thresh when converting mom->vel
   Real read_temp; //assigning temperature to injecting cells
+  //additional flags
+  int init_with_binary;
+  int boundary_with_binary;
 
 };
 tde_pgen tde;
@@ -114,9 +117,9 @@ void LoadBinaryData(const tde_pgen &tde, int time_idx);
 //function to interpolate a grid point in the domain locates at x,y,z
 //using values from a 5D data_array with shape (N_time, N_var, nx, ny, nz)
 KOKKOS_INLINE_FUNCTION Real TrilinearInterpolate(const DvceArray5D<Real>& data_array, int var_idx,
-						 Real x, Real y, Real z, Real xmax, Real ymax, Real zmax,
-						 Real x0, Real y0, Real z0, 
-						 int nx, int ny, int nz);
+             Real x, Real y, Real z, Real xmax, Real ymax, Real zmax,
+             Real x0, Real y0, Real z0, 
+             int nx, int ny, int nz);
 
 }//namesapce
 
@@ -189,6 +192,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   tde.read_dens_thresh = pin->GetOrAddReal("problem", "read_dens_thresh", 1.0e-10);
   tde.read_vel_thresh = pin->GetOrAddReal("problem", "read_vel_thresh", 0.8);
   tde.read_temp = pin->GetOrAddReal("problem", "read_temp", 1.0e-8);
+  tde.init_with_binary = pin->GetOrAddInteger("problem", "init_with_binary", 0);
+  tde.boundary_with_binary = pin->GetOrAddInteger("problem", "boundary_with_binary", 1);
 
   //if radiation
   if (pmbp->prad != nullptr){
@@ -476,7 +481,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       // Extract metric and inverse
       Real glower[4][4], gupper[4][4];
       ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin,
-			      glower, gupper);
+            glower, gupper);
 
       Real rad = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
       Real den = tde_.d_amb;
@@ -485,42 +490,44 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       Real momz = 0.0;
       Real pres = tde_.p_amb;
       Real temp_amb = tde_.p_amb/tde_.d_amb;
+      Real velx = 0.0, vely=0.0, velz=0.0;
 
-      //test adding the interpolated data the first two cells
-      if (size.d_view(m).x1min==domain_x1min && i<=is+1){
-	den = TrilinearInterpolate(binary_data_d, 0, x1v, x2v, x3v, 
-				   binary_xmax_d, binary_ymax_d, binary_zmax_d,
-				   binary_x0_d, binary_y0_d, binary_z0_d,
-				   binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
-	
-	momx = TrilinearInterpolate(binary_data_d, 1, x1v, x2v, x3v, 
-				   binary_xmax_d, binary_ymax_d, binary_zmax_d,
-				   binary_x0_d, binary_y0_d, binary_z0_d,
-				   binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
-	
-	momy = TrilinearInterpolate(binary_data_d, 2, x1v, x2v, x3v, 
-				   binary_xmax_d, binary_ymax_d, binary_zmax_d,
-				   binary_x0_d, binary_y0_d, binary_z0_d,
-				   binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
-
-	momz = TrilinearInterpolate(binary_data_d, 3, x1v, x2v, x3v, 
-				   binary_xmax_d, binary_ymax_d, binary_zmax_d,
-				   binary_x0_d, binary_y0_d, binary_z0_d,
-				   binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
-
-      }
+      if (tde.init_with_binary){
+        //test adding the interpolated data the first two cells
+        if (size.d_view(m).x1min==domain_x1min && i<=is+1){
+          den = TrilinearInterpolate(binary_data_d, 0, x1v, x2v, x3v, 
+                   binary_xmax_d, binary_ymax_d, binary_zmax_d,
+                   binary_x0_d, binary_y0_d, binary_z0_d,
+                   binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
+          
+          momx = TrilinearInterpolate(binary_data_d, 1, x1v, x2v, x3v, 
+                    binary_xmax_d, binary_ymax_d, binary_zmax_d,
+                    binary_x0_d, binary_y0_d, binary_z0_d,
+                    binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
+          
+          momy = TrilinearInterpolate(binary_data_d, 2, x1v, x2v, x3v, 
+                    binary_xmax_d, binary_ymax_d, binary_zmax_d,
+                    binary_x0_d, binary_y0_d, binary_z0_d,
+                    binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
+          
+          momz = TrilinearInterpolate(binary_data_d, 3, x1v, x2v, x3v, 
+                    binary_xmax_d, binary_ymax_d, binary_zmax_d,
+                    binary_x0_d, binary_y0_d, binary_z0_d,
+                    binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
+          
+        }
+        
+        if (den > tde_.read_dens_thresh){ //only assign velocity to gas with density larger than threshold
+          velx = std::min(momx/den, tde_.read_vel_thresh); //velocity cap at read_vel_thresh
+          vely = std::min(momy/den, tde_.read_vel_thresh); //velocity cap at read_vel_thresh
+          velz = std::min(momz/den, tde_.read_vel_thresh); //velocity cap at read_vel_thresh
+          pres = den * tde_.read_temp;
+        }
+      }//end init with binary
       
       if (rad < 1.0) {
         den = tde_.dexcise;
         pres = tde_.pexcise;
-      }
-
-      Real velx = 0.0, vely=0.0, velz=0.0;
-      if (den > tde_.read_dens_thresh){ //only assign velocity to gas with density larger than threshold
-	velx = std::min(momx/den, tde_.read_vel_thresh); //velocity cap at read_vel_thresh
-	vely = std::min(momy/den, tde_.read_vel_thresh); //velocity cap at read_vel_thresh
-	velz = std::min(momz/den, tde_.read_vel_thresh); //velocity cap at read_vel_thresh
-	pres = den * tde_.read_temp;
       }
       
       w0_(m,IDN,k,j,i) = den;
@@ -663,7 +670,7 @@ void FixedStreamInflow(Mesh *pm) {
     // inner x1 boundary
     Real &x1min = size.d_view(m).x1min;
     Real &x1max = size.d_view(m).x1max;
-    Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+    Real x1v = CellCenterX((is-i-1)-is, indcs.nx1, x1min, x1max);
 
     Real &x2min = size.d_view(m).x2min;
     Real &x2max = size.d_view(m).x2max;
@@ -673,16 +680,74 @@ void FixedStreamInflow(Mesh *pm) {
     Real &x3max = size.d_view(m).x3max;
     Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
 
-    //Real rho, pgas, uu1, uu2, uu3;
     if (mb_bcs.d_view(m,BoundaryFace::inner_x1) == BoundaryFlag::user) {
-      //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_,rho,pgas,uu1,uu2,uu3);
-      w0_(m,IDN,k,j,is-i-1) = w0_(m,IDN,k,j,is);
-      w0_(m,IEN,k,j,is-i-1) = w0_(m,IEN,k,j,is);
-      w0_(m,IM1,k,j,is-i-1) = fmin(0.0, w0_(m,IM1,k,j,is));
-      w0_(m,IM2,k,j,is-i-1) = w0_(m,IM2,k,j,is);
-      w0_(m,IM3,k,j,is-i-1) = w0_(m,IM3,k,j,is);
-    }
+      if (!tde_.boundary_with_binary){
+        //outflow inner x1 boundary
+        w0_(m,IDN,k,j,is-i-1) = w0_(m,IDN,k,j,is);
+        w0_(m,IEN,k,j,is-i-1) = w0_(m,IEN,k,j,is);
+        w0_(m,IM1,k,j,is-i-1) = fmin(0.0, w0_(m,IM1,k,j,is));
+        w0_(m,IM2,k,j,is-i-1) = w0_(m,IM2,k,j,is);
+        w0_(m,IM3,k,j,is-i-1) = w0_(m,IM3,k,j,is);
+      }else{
+        //interpolating inner x1 boundary
+        auto binary_data_d = binary_data_device;
+        int binary_nbin1_d = tde_.binary_nbin1;
+        int binary_nbin2_d = tde_.binary_nbin2;
+        int binary_nbin3_d = tde_.binary_nbin3;
+        Real binary_xmax_d = tde_.binary_xmax;
+        Real binary_ymax_d = tde_.binary_ymax;
+        Real binary_zmax_d = tde_.binary_zmax;
+        Real binary_x0_d   = tde_.binary_x0;
+        Real binary_y0_d   = tde_.binary_y0;
+        Real binary_z0_d   = tde_.binary_z0;
+        
+        Real den =  w0_(m,IDN,k,j,is);
+        Real momx = 0.0;
+        Real momy = 0.0;
+        Real momz = 0.0;
+        Real temp = tde_.p_amb/tde_.d_amb;
+        
+        den = TrilinearInterpolate(binary_data_d, 0, x1v, x2v, x3v, 
+                 binary_xmax_d, binary_ymax_d, binary_zmax_d,
+                 binary_x0_d, binary_y0_d, binary_z0_d,
+                 binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
+        
+        momx = TrilinearInterpolate(binary_data_d, 1, x1v, x2v, x3v, 
+                 binary_xmax_d, binary_ymax_d, binary_zmax_d,
+                 binary_x0_d, binary_y0_d, binary_z0_d,
+                 binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
+        
+        momy = TrilinearInterpolate(binary_data_d, 2, x1v, x2v, x3v, 
+                 binary_xmax_d, binary_ymax_d, binary_zmax_d,
+                 binary_x0_d, binary_y0_d, binary_z0_d,
+                 binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
 
+        momz = TrilinearInterpolate(binary_data_d, 3, x1v, x2v, x3v, 
+                 binary_xmax_d, binary_ymax_d, binary_zmax_d,
+                 binary_x0_d, binary_y0_d, binary_z0_d,
+                 binary_nbin1_d, binary_nbin2_d, binary_nbin3_d);
+
+        Real velx = 0.0, vely=0.0, velz=0.0;
+        if (den > tde_.read_dens_thresh){ //only assign velocity to gas with density larger than threshold
+          velx = std::min(momx/den, tde_.read_vel_thresh); //velocity cap at read_vel_thresh
+          vely = std::min(momy/den, tde_.read_vel_thresh); //velocity cap at read_vel_thresh
+          velz = std::min(momz/den, tde_.read_vel_thresh); //velocity cap at read_vel_thresh
+          //pres = den * tde_.read_temp;
+        }else{
+          den = w0_(m,IDN,k,j,is);
+          velx = fmin(0.0, w0_(m,IM1,k,j,is));
+          vely = w0_(m,IM2,k,j,is);
+          velz = w0_(m,IM3,k,j,is);
+          //pres = 
+        }
+        
+        w0_(m,IDN,k,j,is-i-1) = den; //w0_(m,IDN,k,j,is);
+        w0_(m,IEN,k,j,is-i-1) = w0_(m,IEN,k,j,is);
+        w0_(m,IM1,k,j,is-i-1) = velx; //fmin(0.0, w0_(m,IM1,k,j,is));
+        w0_(m,IM2,k,j,is-i-1) = vely; //w0_(m,IM2,k,j,is);
+        w0_(m,IM3,k,j,is-i-1) = velz; //w0_(m,IM3,k,j,is);
+      }
+    }
     // outer x1 boundary
     x1v = CellCenterX((ie+i+1)-is, indcs.nx1, x1min, x1max);
 
@@ -697,59 +762,7 @@ void FixedStreamInflow(Mesh *pm) {
       
     }
 
-    // if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
-    //   Real r_now = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
-    //   Real dr_now = std::sqrt(SQR(x1v - tde_.x1_inj) + SQR(x2v - tde_.x2_inj) + SQR(x3v - tde_.x3_inj));
-    //   if (dr_now <= tde_.r_inj_thresh_coarse){
-  
-    //     //check density flag
-    //     Real dens_now = tde_.local_dens * (mdot_now_code/tde_.mdot_norm);
-    //     if (tde_.uniform_stream==0){
-    //       dens_now = dens_now * std::exp(-std::pow(dr_now/tde_.h_stream, 2)/2.0);
-    //     }
-    //     //printf("x1v:%g, x2v:%g, x3v:%g, x1inj:%g, x2inj:%g, x3inj:%g, rnow:%g, dr_now:%g, dens_now:%g\n", x1v, x2v, x3v, tde_.x1_inj, tde_.x2_inj, tde_.x3_inj, r_now, dr_now, dens_now);
-    //     if (tde_.inj_cell_debug == 1){
-    //       //Claude suggested using atomic_fetch to make sure each thread has its own writting
-    //       int idx = Kokkos::atomic_fetch_add(&counter(), 1);
-    //       if (idx < max_inj) {
-    //         inj_cells(idx, 0) = x1v;
-    //         inj_cells(idx, 1) = x2v;
-    //         inj_cells(idx, 2) = x3v;
-    //         inj_cells(idx, 3) = dr_now;
-    //         inj_cells(idx, 4) = dens_now;
-    //       }
-
-    //     }//debug block
-
-    //     w0_(m,IDN,k,j,(ie+i+1)) = dens_now;
-    //     w0_(m,IEN,k,j,(ie+i+1)) = dens_now * tde_.local_temp * (g_gamma-1.0);
-    //     w0_(m,IM1,k,j,(ie+i+1)) = tde_.vx1_inj;
-    //     w0_(m,IM2,k,j,(ie+i+1)) = tde_.vx2_inj;
-    //     w0_(m,IM3,k,j,(ie+i+1)) = tde_.vx3_inj;
-
-    //     //printf("i:%d, local density:%g, temp:%g, ein:%g\n", ie+i+1, w0_(m,IDN,k,j,(ie+i+1)), w0_(m,IEN,k,j,(ie+i+1))/w0_(m,IDN,k,j,(ie+i+1))/(g_gamma-1.0), w0_(m,IEN,k,j,(ie+i+1)));
-    //   }else{
-    //     //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_, rho,pgas,uu1,uu2,uu3);
-    //     w0_(m,IDN,k,j,(ie+i+1)) = w0_(m,IDN,k,j,ie);
-    //     w0_(m,IEN,k,j,(ie+i+1)) = w0_(m,IEN,k,j,ie);
-    //     w0_(m,IM1,k,j,(ie+i+1)) = fmax(0.0, w0_(m,IM1,k,j,ie));
-    //     w0_(m,IM2,k,j,(ie+i+1)) = w0_(m,IM2,k,j,ie);
-    //     w0_(m,IM3,k,j,(ie+i+1)) = w0_(m,IM3,k,j,ie);
-    //   }
-    // }
   });
-
-  // //debug print
-  // if (tde_.inj_cell_debug == 1) {  
-  //   auto inj_host = Kokkos::create_mirror_view_and_copy(HostMemSpace(), inj_cells);
-  //   auto cnt_host = Kokkos::create_mirror_view_and_copy(HostMemSpace(), counter);
-  //   int n_inj = cnt_host();
-  //   for (int ii = 0; ii < n_inj; ii++) {
-  //     std::cout << "inj: x1=" << inj_host(ii,0) << " x2=" << inj_host(ii,1)
-  //               << " x3=" << inj_host(ii,2) << " dr=" << inj_host(ii,3)
-  //               << " dens=" << inj_host(ii,4) << "\n";
-  //   }
-  // }//debug print block
 
   if (is_radiation_enabled) {
     // Set X1-BCs on i0 if Meshblock face is at the edge of computational domain
@@ -1184,12 +1197,12 @@ void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now){
   if (fp == nullptr) {
     if (global_variable::my_rank == 0) {
       std::cout << "Warning: Binary file '" << tde.bin_file 
-		<< "' could not be opened for inner boundary condition" << std::endl;
+    << "' could not be opened for inner boundary condition" << std::endl;
     }
     binary_read = true; // Mark as read to avoid repeated attempts
     return;
   }
-  std::cout<<"called load binary"<<std::endl;
+  //std::cout<<"called load binary"<<std::endl;
     
   int binary_n_time = tde.binary_n_time; // Number of time snapshots in binary data
   int binary_n_vars = tde.binary_n_vars; //Number of variables in binary data
@@ -1208,11 +1221,11 @@ void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now){
   // // Simple debug to check the elements are read in correctly
   // if (global_variable::my_rank == 0) {
   //   // std::cout << "Sample host values: "
-  //   // 		<< binary_data_host(0, 0, 33, 32, 32) << ", "
-  //   // 		<< binary_data_host(0, 0, 32, 33, 32) << ", "
-  //   // 		<< binary_data_host(0, 0, 32, 32, 33) << std::endl;
+  //   //     << binary_data_host(0, 0, 33, 32, 32) << ", "
+  //   //     << binary_data_host(0, 0, 32, 33, 32) << ", "
+  //   //     << binary_data_host(0, 0, 32, 32, 33) << std::endl;
   //   for (int v = 0; v < binary_n_vars; v++) {
-  // 	std::cout << "var " << v << " value: "
+  //  std::cout << "var " << v << " value: "
   //           << binary_data_host(0, v, 32, 32, 32) << std::endl;
   //   }
   
@@ -1226,7 +1239,7 @@ void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now){
   if (elements_read != elements_to_read) {
     if (global_variable::my_rank == 0) {
       std::cout << "Warning: Read " << elements_read << " elements, expected " 
-		<< elements_to_read << " from binary file '" << tde.bin_file << "'" << std::endl;
+    << elements_to_read << " from binary file '" << tde.bin_file << "'" << std::endl;
     }
   }
 
@@ -1242,11 +1255,11 @@ void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now){
   
   if (global_variable::my_rank == 0) {
     std::cout << "Binary data loaded from '" << tde.bin_file 
-	      << "' for initialize the in-domain data" << std::endl;
+        << "' for initialize the in-domain data" << std::endl;
     std::cout << "Binary data dimensions: " << binary_n_time << " Snapshots, "
-	      << binary_n_vars << " variables, "
-	      << binary_nbin1_ << " x " << binary_nbin2_ << " x " << binary_nbin3_ 
-	      << " cells" << std::endl;
+        << binary_n_vars << " variables, "
+        << binary_nbin1_ << " x " << binary_nbin2_ << " x " << binary_nbin3_ 
+        << " cells" << std::endl;
   }
   
  
