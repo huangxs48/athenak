@@ -77,7 +77,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
   }
 
   // Extract adiabatic index
-  Real gm1;
+  Real gm1 = 0.0;
   if (is_hydro_enabled_) {
     gm1 = pmy_pack->phydro->peos->eos_data.gamma - 1.0;
   } else if (is_mhd_enabled_) {
@@ -210,6 +210,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
       Real wght_sum = 0.0;
       Real suma1 = 0.0;
       Real suma2 = 0.0;
+
       for (int n=0; n<=nang1; ++n) {
         Real n_0 = tc(m,0,0,k,j,i)*nh_c_.d_view(n,0) + tc(m,1,0,k,j,i)*nh_c_.d_view(n,1) +
                    tc(m,2,0,k,j,i)*nh_c_.d_view(n,2) + tc(m,3,0,k,j,i)*nh_c_.d_view(n,3);
