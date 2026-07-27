@@ -98,6 +98,9 @@ void FixedStreamInflow(Mesh *pm);
 // prototype for custom history function
 void TDEFluxes(HistoryData *pdata, Mesh *pm);
 
+//user-defined amr condition
+static void RefinementCondition(MeshBlockPack* pmbp);
+
 //----------------------------------------------------------------------------------------
 //! \fn ProblemGenerator::UserProblem_()
 //! \brief Problem Generator for spherical tde stream problem
@@ -183,6 +186,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, tde.hst_radii_2));
 
   user_hist_func = TDEFluxes;
+  user_ref_func  = RefinementCondition;
 
   //-------------------------------
   // load opacity table, write them into an opacitydata instance, so all devices can access to them
@@ -1057,6 +1061,24 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
   }
 
   return;
+}
+//----------------------------------------------------------------------------------------
+//! \fn void RefinementCondition()
+//! Implements custom AMR refinement condition
+void RefinementCondition(MeshBlockPack* pmbp) {
+  auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
+  int nmb = pmbp->nmb_thispack;
+  int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
+
+  par_for_outer("UserProblem_AMR::REFCOND", DevExeSpace(), 0, 0, 0, (nmb - 1),
+  KOKKOS_LAMBDA(TeamMember_t tmember, const int m) {
+    //Placeholder (does nothing for now)
+    refine_flag.d_view(m + mbs) = 0;
+  });
+
+  // sync host and device
+  refine_flag.template modify<DevExeSpace>();
+  refine_flag.template sync<HostMemSpace>();
 }
 
 namespace{
