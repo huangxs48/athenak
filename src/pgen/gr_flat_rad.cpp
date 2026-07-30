@@ -35,10 +35,6 @@
 #include <fstream>
 
 namespace{
-KOKKOS_INLINE_FUNCTION
-static void GetBoyerLindquistCoordinates(struct tde_pgen pgen,
-                                         Real x1, Real x2, Real x3,
-                                         Real *pr, Real *ptheta, Real *pphi);
 
 struct tde_pgen{
   Real spin;                // black hole spin
@@ -89,6 +85,7 @@ std::vector<Real> mdot_data;    // mdot grid
 
 //function on host to interpolate fallback rate table
 void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now);
+
 
 }//namesapce
 
@@ -421,13 +418,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
             glower, gupper);
 
       Real rad = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
-      // Calculate Boyer-Lindquist coordinates of cell
-      //Real r, theta, phi;
-      //GetBoyerLindquistCoordinates(tde_, x1v, x2v, x3v, &r, &theta, &phi);
-      //Real sin_theta = sin(theta);
-      //Real cos_theta = cos(theta);
-      //Real sin_phi = sin(phi);
-      //Real cos_phi = cos(phi);
 
       Real den = tde_.d_amb;
       Real pres = tde_.p_amb;
@@ -437,21 +427,36 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
         den = tde_.dexcise;
         pres = tde_.pexcise;
       }
-      w0_(m,IDN,k,j,i) = den;
-      w0_(m,IVX,k,j,i) = 0.0;
-      w0_(m,IVY,k,j,i) = 0.0;
-      w0_(m,IVZ,k,j,i) = 0.0;
-      w0_(m,IEN,k,j,i) = pres/(g_gamma-1.0);
 
+      //MRM: transform to normal frame, like gr_torus;L406
+      //xs: write a general function to handle frame transformation between u0, u1, u2, u3 -> uu0, uu1, uu2, uu3?
+      //xs: currently use the quadratic form as gr_bondi:L282
+      Real u1 = 0.0, u2 = 0.0, u3 = 0.0; //zero velocity in the coordinate frame
+      Real tmp = glower[1][1]*u1*u1 + 2.0*glower[1][2]*u1*u2 + 2.0*glower[1][3]*u1*u3
+           + glower[2][2]*u2*u2 + 2.0*glower[2][3]*u2*u3
+           + glower[3][3]*u3*u3;
+      Real gammasq = 1.0 + tmp;
+      Real b = glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
+      Real u0 = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
+   
+      Real uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
+      Real uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
+      Real uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
+      
+      w0_(m,IDN,k,j,i) = den;
+      w0_(m,IVX,k,j,i) = uu1;
+      w0_(m,IVY,k,j,i) = uu2;
+      w0_(m,IVZ,k,j,i) = uu3;
+      w0_(m,IEN,k,j,i) = pres/(g_gamma-1.0);
       
       if (is_radiation_enabled){//copied from gr_torus.cpp, initialize radiation intensity
         Real temp_init = pres/den;
         Real urad = tde_.arad * SQR(SQR(temp_init));
 
-        //no initial velocity
-        Real uu1 = 0.0;
-        Real uu2 = 0.0;
-        Real uu3 = 0.0;
+        // //no initial velocity
+        // Real uu1 = 0.0;
+        // Real uu2 = 0.0;
+        // Real uu3 = 0.0;
 
         Real q = glower[1][1]*uu1*uu1 + 2.0*glower[1][2]*uu1*uu2 + 2.0*glower[1][3]*uu1*uu3
           + glower[2][2]*uu2*uu2 + 2.0*glower[2][3]*uu2*uu3
@@ -624,11 +629,26 @@ void FixedStreamInflow(Mesh *pm) {
 
         }//debug block
 
+	//MRM: similarly here, vxi_inj is calculated by geodesics.py, which are in coordinate frame, transform to normal frame
+	Real glower[4][4], gupper[4][4];
+	//xs: x1v is ghost cell value, but x2v, x3v still active cell center, should be fine, similar to L430
+	ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin, glower, gupper);
+	Real u1 = tde_.vx1_inj, u2 = tde_.vx2_inj, u3 = tde_.vx3_inj;
+	Real tmp = glower[1][1]*u1*u1 + 2.0*glower[1][2]*u1*u2 + 2.0*glower[1][3]*u1*u3
+	         + glower[2][2]*u2*u2 + 2.0*glower[2][3]*u2*u3
+	         + glower[3][3]*u3*u3;
+	Real gammasq = 1.0 + tmp;
+	Real b = glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
+	Real u0 = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
+	Real uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
+	Real uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
+	Real uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
+
         w0_(m,IDN,k,j,(ie+i+1)) = dens_now;
-        w0_(m,IEN,k,j,(ie+i+1)) = dens_now * tde_.local_temp * (g_gamma-1.0);
-        w0_(m,IM1,k,j,(ie+i+1)) = tde_.vx1_inj;
-        w0_(m,IM2,k,j,(ie+i+1)) = tde_.vx2_inj;
-        w0_(m,IM3,k,j,(ie+i+1)) = tde_.vx3_inj;
+        w0_(m,IEN,k,j,(ie+i+1)) = dens_now * tde_.local_temp / (g_gamma-1.0);
+        w0_(m,IM1,k,j,(ie+i+1)) = uu1;
+        w0_(m,IM2,k,j,(ie+i+1)) = uu2;
+        w0_(m,IM3,k,j,(ie+i+1)) = uu3;
 
         //printf("i:%d, local density:%g, temp:%g, ein:%g\n", ie+i+1, w0_(m,IDN,k,j,(ie+i+1)), w0_(m,IEN,k,j,(ie+i+1))/w0_(m,IDN,k,j,(ie+i+1))/(g_gamma-1.0), w0_(m,IEN,k,j,(ie+i+1)));
       }else{
@@ -798,33 +818,6 @@ void FixedStreamInflow(Mesh *pm) {
 
   return;
 }
-
-
-
-
-namespace {
-//----------------------------------------------------------------------------------------
-// Function for returning corresponding Boyer-Lindquist coordinates of point
-// Inputs:
-//   x1,x2,x3: global coordinates to be converted
-// Outputs:
-//   pr,ptheta,pphi: variables pointed to set to Boyer-Lindquist coordinates
-
-KOKKOS_INLINE_FUNCTION
-static void GetBoyerLindquistCoordinates(struct tde_pgen pgen,
-                                         Real x1, Real x2, Real x3,
-                                         Real *pr, Real *ptheta, Real *pphi) {
-  Real rad = sqrt(SQR(x1) + SQR(x2) + SQR(x3));
-  Real r = fmax((sqrt( SQR(rad) - SQR(pgen.spin) + sqrt(SQR(SQR(rad)-SQR(pgen.spin))
-                      + 4.0*SQR(pgen.spin)*SQR(x3)) ) / sqrt(2.0)), 1.0);
-  *pr = r;
-  *ptheta = (fabs(x3/r) < 1.0) ? acos(x3/r) : acos(copysign(1.0, x3));
-  *pphi = atan2(r*x2-pgen.spin*x1, pgen.spin*x2+r*x1) -
-          pgen.spin*r/(SQR(r)-2.0*r+SQR(pgen.spin));
-  return;
-}
-
-}//namespace
 
 
 //----------------------------------------------------------------------------------------
