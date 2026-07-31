@@ -89,7 +89,7 @@ std::vector<Real> mdot_data;    // mdot grid
 void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now);
 
 KOKKOS_INLINE_FUNCTION
-static void GetBoyerLindquistCoordinates(struct tde_pgen pgen,
+static void GetBoyerLindquistCoordinates(Real spin,
                                          Real x1, Real x2, Real x3,
                                          Real *pr, Real *ptheta, Real *pphi);
 
@@ -439,7 +439,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       // we have to recalculate r; we try to avoid excising cells within the horizon which
       // might have a corner sticking out of the horizon.
       Real r_exc, theta_exc, phi_exc;
-      GetBoyerLindquistCoordinates(tde_, x1v + copysign(0.5*dx1,x1v),
+      GetBoyerLindquistCoordinates(tde_.spin, x1v + copysign(0.5*dx1,x1v),
                                       x2v + copysign(0.5*dx2,x2v),
                                       x3v + copysign(0.5*dx3,x3v), &r_exc,
                                       &theta_exc, &phi_exc);
@@ -454,7 +454,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       //xs: currently use the quadratic form as gr_bondi:L282
 
       Real uu1 = 0.0, uu2 = 0.0 , uu3 = 0.0;
-      if (tde.init_4vel){ //zero velocity in the coordinate frame
+      if (tde_.init_4vel){ //zero velocity in the coordinate frame
         Real u1 = 0.0;
         Real u2 = 0.0;
         Real u3 = 0.0; 
@@ -1378,16 +1378,16 @@ void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now){
 //   pr,ptheta,pphi: variables pointed to set to Boyer-Lindquist coordinates
 
 KOKKOS_INLINE_FUNCTION
-static void GetBoyerLindquistCoordinates(struct tde_pgen pgen,
+static void GetBoyerLindquistCoordinates(Real spin,
                                          Real x1, Real x2, Real x3,
                                          Real *pr, Real *ptheta, Real *pphi) {
   Real rad = sqrt(SQR(x1) + SQR(x2) + SQR(x3));
-  Real r = fmax((sqrt( SQR(rad) - SQR(pgen.spin) + sqrt(SQR(SQR(rad)-SQR(pgen.spin))
-                      + 4.0*SQR(pgen.spin)*SQR(x3)) ) / sqrt(2.0)), 1.0);
+  Real r = fmax((sqrt( SQR(rad) - SQR(spin) + sqrt(SQR(SQR(rad)-SQR(spin))
+                      + 4.0*SQR(spin)*SQR(x3)) ) / sqrt(2.0)), 1.0);
   *pr = r;
   *ptheta = (fabs(x3/r) < 1.0) ? acos(x3/r) : acos(copysign(1.0, x3));
-  *pphi = atan2(r*x2-pgen.spin*x1, pgen.spin*x2+r*x1) -
-          pgen.spin*r/(SQR(r)-2.0*r+SQR(pgen.spin));
+  *pphi = atan2(r*x2-spin*x1, spin*x2+r*x1) -
+          spin*r/(SQR(r)-2.0*r+SQR(spin));
   return;
 }
 
