@@ -441,7 +441,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
       if (!is_radiation_enabled && tde_.rad_dom_lim){
         Real Tcode = pres/den;
-        pres = tde_.arad_code*SQR(SQR(Tcode))/3.0
+        pres = tde_.arad_code*SQR(SQR(Tcode))/3.0;
       }
 
       // To be consistent with the excision algorithm,
@@ -727,7 +727,7 @@ void FixedStreamInflow(Mesh *pm) {
         Real press_stream = dens_now * tde_.local_temp;
 
         if (!is_radiation_enabled && tde_.rad_dom_lim){
-          press_stream = tde_.arad_code*SQR(SQR(tde_.local_temp))/3.0
+          press_stream = tde_.arad_code*SQR(SQR(tde_.local_temp))/3.0;
         }
 
         w0_(m,IDN,k,j,(ie+i+1)) = dens_now;
