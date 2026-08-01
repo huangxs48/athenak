@@ -46,9 +46,13 @@ struct tde_pgen{
 
   //injection location, velocity and threshhold
   Real x1_inj, x2_inj, x3_inj;
-  Real vx1_inj, vx2_inj, vx3_inj;
+  Real ux0_inj, ux1_inj, ux2_inj, ux3_inj;
   Real r_inj_thresh_coarse;
   Real local_dens, local_temp;
+  int bc_4vel; //Use 4-velocity to set no-inflow boundary conditions
+  int init_4vel; //Set 4-velocity to zero at initialization
+  int rad_dom_lim; //radiation dominated limit to set internal energy
+  Real arad_code; //radiation constant a in code units a'=a/a0, used for hydro only (if rad_dom_lim)
 
   //stream density structure
   int uniform_stream; //flag for uniform density
@@ -86,6 +90,10 @@ std::vector<Real> mdot_data;    // mdot grid
 //function on host to interpolate fallback rate table
 void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now);
 
+KOKKOS_INLINE_FUNCTION
+static void GetBoyerLindquistCoordinates(Real spin,
+                                         Real x1, Real x2, Real x3,
+                                         Real *pr, Real *ptheta, Real *pphi);
 
 }//namesapce
 
@@ -94,6 +102,9 @@ void FixedStreamInflow(Mesh *pm);
 
 // prototype for custom history function
 void TDEFluxes(HistoryData *pdata, Mesh *pm);
+
+//user-defined amr condition
+static void RefinementCondition(MeshBlockPack* pmbp);
 
 //----------------------------------------------------------------------------------------
 //! \fn ProblemGenerator::UserProblem_()
@@ -129,9 +140,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   tde.x1_inj = pin->GetReal("problem", "x1_inj");
   tde.x2_inj = pin->GetReal("problem", "x2_inj");
   tde.x3_inj = pin->GetReal("problem", "x3_inj");
-  tde.vx1_inj = pin->GetReal("problem", "vx1_inj");
-  tde.vx2_inj = pin->GetReal("problem", "vx2_inj");
-  tde.vx3_inj = pin->GetReal("problem", "vx3_inj");
+  tde.ux0_inj = pin->GetReal("problem", "ux0_inj");
+  tde.ux1_inj = pin->GetReal("problem", "ux1_inj");
+  tde.ux2_inj = pin->GetReal("problem", "ux2_inj");
+  tde.ux3_inj = pin->GetReal("problem", "ux3_inj");
   tde.local_dens = pin->GetReal("problem", "local_dens");
   tde.local_temp = pin->GetReal("problem", "local_temp");
   tde.r_inj_thresh_coarse = pin->GetReal("problem", "r_inj_thresh_coarse");
@@ -141,6 +153,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   tde.uniform_stream = pin->GetOrAddInteger("problem", "uniform_stream", 1);
   tde.h_stream = pin->GetOrAddReal("problem", "h_stream", 0.01);
   tde.inj_cell_debug = pin->GetOrAddInteger("problem", "inj_cell_debug", 0);
+  tde.bc_4vel = pin->GetOrAddInteger("problem", "bc_4vel", 0);
+  tde.init_4vel = pin->GetOrAddInteger("problem", "init_4vel", 0);
+  tde.rad_dom_lim = pin->GetOrAddInteger("problem", "rad_dom_lim", 0);
+  tde.arad_code = pin->GetOrAddReal("problem", "arad_code", 0.0);
 
   //if radiation
   if (pmbp->prad != nullptr){
@@ -171,7 +187,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   // Spherical Grid for user-defined history, copied from gr_torus
   auto &grids = spherical_grids;
-  const Real rflux = (is_radiation_enabled) ? ceil(r_excise + 1.0) : 1.0 + sqrt(1.0 - SQR(tde.spin));
+  const Real rflux = (is_radiation_enabled) ? ceil(r_excise + 1.0) : 1.0 + sqrt(1.0 - SQR(tde.spin)); //?
   int sph_grid_level = 6;
   grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, rflux)); //spherical grid level is 5 levels
   // NOTE(@pdmullen): Enroll additional radii for flux analysis by
@@ -180,6 +196,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, tde.hst_radii_2));
 
   user_hist_func = TDEFluxes;
+  user_ref_func  = RefinementCondition;
 
   //-------------------------------
   // load opacity table, write them into an opacitydata instance, so all devices can access to them
@@ -408,18 +425,35 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       int nx3 = indcs.nx3;
       Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
 
+      Real &dx1 = size.d_view(m).dx1;
+      Real &dx2 = size.d_view(m).dx2;
+      Real &dx3 = size.d_view(m).dx3;
+
       // Extract metric and inverse
       Real glower[4][4], gupper[4][4];
       ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin,
             glower, gupper);
 
-      Real rad = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+      //Real rad = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
 
       Real den = tde_.d_amb;
       Real pres = tde_.p_amb;
+
+      if (!is_radiation_enabled && tde_.rad_dom_lim){
+        Real Tcode = pres/den;
+        pres = tde_.arad_code*SQR(SQR(Tcode))/3.0;
+      }
+
+      // To be consistent with the excision algorithm,
+      // we have to recalculate r; we try to avoid excising cells within the horizon which
+      // might have a corner sticking out of the horizon.
+      Real r_exc, theta_exc, phi_exc;
+      GetBoyerLindquistCoordinates(tde_.spin, x1v + copysign(0.5*dx1,x1v),
+                                      x2v + copysign(0.5*dx2,x2v),
+                                      x3v + copysign(0.5*dx3,x3v), &r_exc,
+                                      &theta_exc, &phi_exc);
       
-      //xs: does this need the check of excising inside horizon as gr_torus.cpp L362?
-      if (rad < 1.0) {
+      if (r_exc < 1.0) {
         den = tde_.dexcise;
         pres = tde_.pexcise;
       }
@@ -427,17 +461,23 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       //MRM: transform to normal frame, like gr_torus;L406
       //xs: write a general function to handle frame transformation between u0, u1, u2, u3 -> uu0, uu1, uu2, uu3?
       //xs: currently use the quadratic form as gr_bondi:L282
-      Real u1 = 0.0, u2 = 0.0, u3 = 0.0; //zero velocity in the coordinate frame
-      Real tmp = glower[1][1]*u1*u1 + 2.0*glower[1][2]*u1*u2 + 2.0*glower[1][3]*u1*u3
-           + glower[2][2]*u2*u2 + 2.0*glower[2][3]*u2*u3
-           + glower[3][3]*u3*u3;
-      Real gammasq = 1.0 + tmp;
-      Real b = glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
-      Real u0 = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
+
+      Real uu1 = 0.0, uu2 = 0.0 , uu3 = 0.0;
+      if (tde_.init_4vel){ //zero velocity in the coordinate frame
+        Real u1 = 0.0;
+        Real u2 = 0.0;
+        Real u3 = 0.0; 
+        Real tmp = glower[1][1]*u1*u1 + 2.0*glower[1][2]*u1*u2 + 2.0*glower[1][3]*u1*u3
+               + glower[2][2]*u2*u2 + 2.0*glower[2][3]*u2*u3
+               + glower[3][3]*u3*u3;
+        Real gammasq = 1.0 + tmp;
+        Real b = glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
+        Real u0 = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
    
-      Real uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
-      Real uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
-      Real uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
+        uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
+        uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
+        uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
+      }
       
       w0_(m,IDN,k,j,i) = den;
       w0_(m,IVX,k,j,i) = uu1;
@@ -541,8 +581,8 @@ void FixedStreamInflow(Mesh *pm) {
     nang1 = pm->pmb_pack->prad->prgeo->nangles - 1;
   }
 
-  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,is-ng,is-1,0,(n2-1),0,(n3-1));
-  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,ie+1,ie+ng,0,(n2-1),0,(n3-1));
+  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,is-ng,is,0,(n2-1),0,(n3-1)); //also do cons2prim in innermost/outermost active cell
+  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,ie,ie+ng,0,(n2-1),0,(n3-1)); //since we use it to set the ghost zones
 
   // mass fallback rate normalization
   Real mdot_now_code = 1.0; //actual mdot in code unit
@@ -578,7 +618,7 @@ void FixedStreamInflow(Mesh *pm) {
     // inner x1 boundary
     Real &x1min = size.d_view(m).x1min;
     Real &x1max = size.d_view(m).x1max;
-    Real x1v = CellCenterX((i-is-1)-is, indcs.nx1, x1min, x1max);
+    Real x1v = CellCenterX((is-i-1)-is, indcs.nx1, x1min, x1max); //gz are -1,-2 (16x16x16). Q is, with gz metric, would az uui represent an inflow
 
     Real &x2min = size.d_view(m).x2min;
     Real &x2max = size.d_view(m).x2max;
@@ -588,21 +628,67 @@ void FixedStreamInflow(Mesh *pm) {
     Real &x3max = size.d_view(m).x3max;
     Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
 
-    //Real rho, pgas, uu1, uu2, uu3;
+    
+
+    //Real rho, internal energy, uu1, uu2, uu3;
     if (mb_bcs.d_view(m,BoundaryFace::inner_x1) == BoundaryFlag::user) {
       //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_,rho,pgas,uu1,uu2,uu3);
-      w0_(m,IDN,k,j,is-i-1) = w0_(m,IDN,k,j,is);
+      
+      w0_(m,IDN,k,j,is-i-1) = w0_(m,IDN,k,j,is); 
       w0_(m,IEN,k,j,is-i-1) = w0_(m,IEN,k,j,is);
-      w0_(m,IM1,k,j,is-i-1) = fmin(0.0, w0_(m,IM1,k,j,is));
-      w0_(m,IM2,k,j,is-i-1) = w0_(m,IM2,k,j,is);
-      w0_(m,IM3,k,j,is-i-1) = w0_(m,IM3,k,j,is);
-    }
+      
+
+      if (tde_.bc_4vel){ //use 4-velocity to determine inflow
+        Real glower[4][4], gupper[4][4];
+        // Extract metric and inverse
+        ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin,
+              glower, gupper);
+        Real uu1 = w0_(m,IM1,k,j,is);
+        Real uu2 = w0_(m,IM2,k,j,is);
+        Real uu3 = w0_(m,IM3,k,j,is);
+        Real q = glower[1][1]*uu1*uu1 +2.0*glower[1][2]*uu1*uu2 +2.0*glower[1][3]*uu1*uu3
+                 + glower[2][2]*uu2*uu2 +2.0*glower[2][3]*uu2*uu3
+                 + glower[3][3]*uu3*uu3;
+        Real alpha = sqrt(-1.0/gupper[0][0]);
+        Real gamma = sqrt(1.0 + q);
+        Real u0 = gamma / alpha;
+        Real u1 = uu1 + gupper[0][1]/gupper[0][0] * u0;
+        Real u2 = uu2 + gupper[0][2]/gupper[0][0] * u0;
+        Real u3 = uu3 + gupper[0][3]/gupper[0][0] * u0;
+
+        if (u1 > 0.0){
+          Real u1new = 0.0;
+          Real tmp = glower[1][1]*u1new*u1new + 2.0*glower[1][2]*u1new*u2 + 2.0*glower[1][3]*u1new*u3
+                   + glower[2][2]*u2*u2 + 2.0*glower[2][3]*u2*u3
+                   + glower[3][3]*u3*u3;
+          Real gammasq = 1.0 + tmp;
+          Real b = glower[0][1]*u1new + glower[0][2]*u2 + glower[0][3]*u3;
+          Real u0new = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
+   
+          uu1 = u1new - gupper[0][1]/gupper[0][0] * u0new;
+          uu2 = u2 - gupper[0][2]/gupper[0][0] * u0new;
+          uu3 = u3 - gupper[0][3]/gupper[0][0] * u0new;
+        }
+        w0_(m,IM1,k,j,is-i-1) = uu1;
+        w0_(m,IM2,k,j,is-i-1) = uu2;
+        w0_(m,IM3,k,j,is-i-1) = uu3;
+      
+      }else{ //use normal frame velocity to determine inflow
+        w0_(m,IM1,k,j,is-i-1) = fmin(0.0, w0_(m,IM1,k,j,is));
+        w0_(m,IM2,k,j,is-i-1) = w0_(m,IM2,k,j,is);
+        w0_(m,IM3,k,j,is-i-1) = w0_(m,IM3,k,j,is);
+      }
+    }//close inner x1 boundary
 
     // outer x1 boundary
-    x1v = CellCenterX((ie+i+1)-is, indcs.nx1, x1min, x1max);
+    x1v = CellCenterX((ie+i+1)-is, indcs.nx1, x1min, x1max); //gz are 16,17 ith (16x16x16)
 
     if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
-      Real r_now = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+      
+      Real glower[4][4], gupper[4][4];
+      ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin, glower, gupper);
+      
+      Real r_now = std::sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v)); //MR: Change for spinning BHs (would also need to change xinj script) ? 
       Real dr_now = std::sqrt(SQR(x1v - tde_.x1_inj) + SQR(x2v - tde_.x2_inj) + SQR(x3v - tde_.x3_inj));
       if (dr_now <= tde_.r_inj_thresh_coarse){
   
@@ -625,38 +711,77 @@ void FixedStreamInflow(Mesh *pm) {
 
         }//debug block
 
-	//MRM: similarly here, vxi_inj is calculated by geodesics.py, which are in coordinate frame, transform to normal frame
-	Real glower[4][4], gupper[4][4];
-	//xs: x1v is ghost cell value, but x2v, x3v still active cell center, should be fine, similar to L430
-	ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin, glower, gupper);
-	Real u1 = tde_.vx1_inj, u2 = tde_.vx2_inj, u3 = tde_.vx3_inj;
-	Real tmp = glower[1][1]*u1*u1 + 2.0*glower[1][2]*u1*u2 + 2.0*glower[1][3]*u1*u3
-	         + glower[2][2]*u2*u2 + 2.0*glower[2][3]*u2*u3
-	         + glower[3][3]*u3*u3;
-	Real gammasq = 1.0 + tmp;
-	Real b = glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
-	Real u0 = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
-	Real uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
-	Real uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
-	Real uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
+    	//MRM: similarly here, vxi_inj is calculated by geodesics.py, which are in coordinate frame, transform to normal frame
+    	//xs: x1v is ghost cell value, but x2v, x3v still active cell center, should be fine, similar to L430
+    	Real u1 = tde_.ux1_inj, u2 = tde_.ux2_inj, u3 = tde_.ux3_inj;
+    	Real tmp = glower[1][1]*u1*u1 + 2.0*glower[1][2]*u1*u2 + 2.0*glower[1][3]*u1*u3
+    	         + glower[2][2]*u2*u2 + 2.0*glower[2][3]*u2*u3
+    	         + glower[3][3]*u3*u3;
+    	Real gammasq = 1.0 + tmp;
+    	Real b = glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
+    	Real u0 = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
+    	Real uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
+    	Real uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
+    	Real uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
+
+        Real press_stream = dens_now * tde_.local_temp;
+
+        if (!is_radiation_enabled && tde_.rad_dom_lim){
+          press_stream = tde_.arad_code*SQR(SQR(tde_.local_temp))/3.0;
+        }
 
         w0_(m,IDN,k,j,(ie+i+1)) = dens_now;
-        w0_(m,IEN,k,j,(ie+i+1)) = dens_now * tde_.local_temp / (g_gamma-1.0);
+        w0_(m,IEN,k,j,(ie+i+1)) = press_stream / (g_gamma-1.0);
         w0_(m,IM1,k,j,(ie+i+1)) = uu1;
         w0_(m,IM2,k,j,(ie+i+1)) = uu2;
         w0_(m,IM3,k,j,(ie+i+1)) = uu3;
 
         //printf("i:%d, local density:%g, temp:%g, ein:%g\n", ie+i+1, w0_(m,IDN,k,j,(ie+i+1)), w0_(m,IEN,k,j,(ie+i+1))/w0_(m,IDN,k,j,(ie+i+1))/(g_gamma-1.0), w0_(m,IEN,k,j,(ie+i+1)));
-      }else{
+      }else{//non-injection cells
         //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_, rho,pgas,uu1,uu2,uu3);
         w0_(m,IDN,k,j,(ie+i+1)) = w0_(m,IDN,k,j,ie);
         w0_(m,IEN,k,j,(ie+i+1)) = w0_(m,IEN,k,j,ie);
-        w0_(m,IM1,k,j,(ie+i+1)) = fmax(0.0, w0_(m,IM1,k,j,ie));
-        w0_(m,IM2,k,j,(ie+i+1)) = w0_(m,IM2,k,j,ie);
-        w0_(m,IM3,k,j,(ie+i+1)) = w0_(m,IM3,k,j,ie);
-      }
-    }
-  });
+
+        if (tde_.bc_4vel){
+          Real uu1 = w0_(m,IM1,k,j,ie);
+          Real uu2 = w0_(m,IM2,k,j,ie);
+          Real uu3 = w0_(m,IM3,k,j,ie);
+          Real q = glower[1][1]*uu1*uu1 +2.0*glower[1][2]*uu1*uu2 +2.0*glower[1][3]*uu1*uu3
+                   + glower[2][2]*uu2*uu2 +2.0*glower[2][3]*uu2*uu3
+                   + glower[3][3]*uu3*uu3;
+          Real alpha = sqrt(-1.0/gupper[0][0]);
+          Real gamma = sqrt(1.0 + q);
+          Real u0 = gamma / alpha;
+          Real u1 = uu1 + gupper[0][1]/gupper[0][0] * u0;
+          Real u2 = uu2 + gupper[0][2]/gupper[0][0] * u0;
+          Real u3 = uu3 + gupper[0][3]/gupper[0][0] * u0;
+
+          if (u1 < 0.0){ // inflow at outer x1
+              Real u1new = 0.0;
+              Real tmp = glower[1][1]*u1new*u1new + 2.0*glower[1][2]*u1new*u2 + 2.0*glower[1][3]*u1new*u3
+                       + glower[2][2]*u2*u2 + 2.0*glower[2][3]*u2*u3
+                       + glower[3][3]*u3*u3;
+              Real gammasq = 1.0 + tmp;
+              Real b = glower[0][1]*u1new + glower[0][2]*u2 + glower[0][3]*u3;
+              Real u0new = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
+
+              uu1 = u1new - gupper[0][1]/gupper[0][0] * u0new;
+              uu2 = u2    - gupper[0][2]/gupper[0][0] * u0new;
+              uu3 = u3    - gupper[0][3]/gupper[0][0] * u0new;
+          }
+          w0_(m,IM1,k,j,(ie+i+1)) = uu1;
+          w0_(m,IM2,k,j,(ie+i+1)) = uu2;
+          w0_(m,IM3,k,j,(ie+i+1)) = uu3;
+
+      
+        }else{//use normal frame velocity to determine inflow
+          w0_(m,IM1,k,j,(ie+i+1)) = fmax(0.0, w0_(m,IM1,k,j,ie));
+          w0_(m,IM2,k,j,(ie+i+1)) = w0_(m,IM2,k,j,ie);
+          w0_(m,IM3,k,j,(ie+i+1)) = w0_(m,IM3,k,j,ie);
+        }//close use normal frame vel
+      }//close non-injection cells
+    }//close outer x1 boundary
+  });//close par for
 
   //debug print
   if (tde_.inj_cell_debug == 1) {  
@@ -670,7 +795,8 @@ void FixedStreamInflow(Mesh *pm) {
     }
   }//debug print block
 
-  if (is_radiation_enabled) {
+  //MR: should we set the intensities in the injection cells with Tstream? For other cells, zero-out inflowing I?
+  if (is_radiation_enabled) { 
     // Set X1-BCs on i0 if Meshblock face is at the edge of computational domain
     par_for("outflow_rad_x1", DevExeSpace(),0,(nmb-1),0,nang1,0,(n3-1),0,(n2-1),
     KOKKOS_LAMBDA(int m, int n, int k, int j) {
@@ -687,12 +813,13 @@ void FixedStreamInflow(Mesh *pm) {
     });
   }
 
+  
   // PrimToCons on X1 physical boundary ghost zones
   pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,is-ng,is-1,0,(n2-1),0,(n3-1));
   pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,ie+1,ie+ng,0,(n2-1),0,(n3-1));
 
-  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),js-ng,js-1,0,(n3-1));
-  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),je+1,je+ng,0,(n3-1));
+  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),js-ng,js,0,(n3-1));
+  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),je,je+ng,0,(n3-1));
 
   par_for("fixed_x2", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(ng-1),0,(n1-1),
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
@@ -703,7 +830,7 @@ void FixedStreamInflow(Mesh *pm) {
 
     Real &x2min = size.d_view(m).x2min;
     Real &x2max = size.d_view(m).x2max;
-    Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+    Real x2v = CellCenterX((js-j-1)-js, indcs.nx2, x2min, x2max); //-1,-2 are ghost zones
 
     Real &x3min = size.d_view(m).x3min;
     Real &x3max = size.d_view(m).x3max;
@@ -714,10 +841,47 @@ void FixedStreamInflow(Mesh *pm) {
       //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_,rho,pgas,uu1,uu2,uu3);
       w0_(m,IDN,k,js-j-1,i) = w0_(m,IDN,k,js,i);
       w0_(m,IEN,k,js-j-1,i) = w0_(m,IEN,k,js,i);
-      w0_(m,IM1,k,js-j-1,i) = w0_(m,IM1,k,js,i);
-      w0_(m,IM2,k,js-j-1,i) = fmin(0.0, w0_(m,IM2,k,js,i));
-      w0_(m,IM3,k,js-j-1,i) = w0_(m,IM3,k,js,i);
-    }
+
+      if (tde_.bc_4vel){ //use 4-velocity to determine inflow
+        Real glower[4][4], gupper[4][4];
+    ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin,
+          glower, gupper);
+        Real uu1 = w0_(m,IM1,k,js,i);
+        Real uu2 = w0_(m,IM2,k,js,i);
+        Real uu3 = w0_(m,IM3,k,js,i);
+        Real q = glower[1][1]*uu1*uu1 +2.0*glower[1][2]*uu1*uu2 +2.0*glower[1][3]*uu1*uu3
+                 + glower[2][2]*uu2*uu2 +2.0*glower[2][3]*uu2*uu3
+                 + glower[3][3]*uu3*uu3;
+        Real alpha = sqrt(-1.0/gupper[0][0]);
+        Real gamma = sqrt(1.0 + q);
+        Real u0 = gamma / alpha;
+        Real u1 = uu1 + gupper[0][1]/gupper[0][0] * u0;
+        Real u2 = uu2 + gupper[0][2]/gupper[0][0] * u0;
+        Real u3 = uu3 + gupper[0][3]/gupper[0][0] * u0;
+
+        if (u2 > 0.0){ // inflow at inner x2
+            Real u2new = 0.0;
+            Real tmp = glower[1][1]*u1*u1 + 2.0*glower[1][2]*u1*u2new + 2.0*glower[1][3]*u1*u3
+                     + glower[2][2]*u2new*u2new + 2.0*glower[2][3]*u2new*u3
+                     + glower[3][3]*u3*u3;
+            Real gammasq = 1.0 + tmp;
+            Real b = glower[0][1]*u1 + glower[0][2]*u2new + glower[0][3]*u3;
+            Real u0new = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
+
+            uu1 = u1    - gupper[0][1]/gupper[0][0] * u0new;
+            uu2 = u2new - gupper[0][2]/gupper[0][0] * u0new;
+            uu3 = u3    - gupper[0][3]/gupper[0][0] * u0new;
+        }
+        w0_(m,IM1,k,js-j-1,i) = uu1;
+        w0_(m,IM2,k,js-j-1,i) = uu2;
+        w0_(m,IM3,k,js-j-1,i) = uu3;
+
+      }else{//use normal frame velocity to determine inflow
+        w0_(m,IM1,k,js-j-1,i) = w0_(m,IM1,k,js,i);
+        w0_(m,IM2,k,js-j-1,i) = fmin(0.0, w0_(m,IM2,k,js,i));
+        w0_(m,IM3,k,js-j-1,i) = w0_(m,IM3,k,js,i);
+      }
+    }//close inner x2 boundary
 
     // outer x2 boundary
     x2v = CellCenterX((je+j+1)-js, indcs.nx2, x2min, x2max);
@@ -726,11 +890,47 @@ void FixedStreamInflow(Mesh *pm) {
       
       w0_(m,IDN,k,(je+j+1),i) = w0_(m,IDN,k,je,i);
       w0_(m,IEN,k,(je+j+1),i) = w0_(m,IEN,k,je,i);
-      w0_(m,IM1,k,(je+j+1),i) = w0_(m,IM1,k,je,i);
-      w0_(m,IM2,k,(je+j+1),i) = fmax(0.0, w0_(m,IM2,k,je,i));
-      w0_(m,IM3,k,(je+j+1),i) = w0_(m,IM3,k,je,i);
-    }
-  });
+      if (tde_.bc_4vel){ //use 4-velocity to determine inflow
+        Real glower[4][4], gupper[4][4];
+        ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin,
+          glower, gupper);
+        Real uu1 = w0_(m,IM1,k,je,i);
+        Real uu2 = w0_(m,IM2,k,je,i);
+        Real uu3 = w0_(m,IM3,k,je,i);
+        Real q = glower[1][1]*uu1*uu1 +2.0*glower[1][2]*uu1*uu2 +2.0*glower[1][3]*uu1*uu3
+                 + glower[2][2]*uu2*uu2 +2.0*glower[2][3]*uu2*uu3
+                 + glower[3][3]*uu3*uu3;
+        Real alpha = sqrt(-1.0/gupper[0][0]);
+        Real gamma = sqrt(1.0 + q);
+        Real u0 = gamma / alpha;
+        Real u1 = uu1 + gupper[0][1]/gupper[0][0] * u0;
+        Real u2 = uu2 + gupper[0][2]/gupper[0][0] * u0;
+        Real u3 = uu3 + gupper[0][3]/gupper[0][0] * u0;
+
+        if (u2 < 0.0){ // inflow at outer x2
+            Real u2new = 0.0;
+            Real tmp = glower[1][1]*u1*u1 + 2.0*glower[1][2]*u1*u2new + 2.0*glower[1][3]*u1*u3
+                     + glower[2][2]*u2new*u2new + 2.0*glower[2][3]*u2new*u3
+                     + glower[3][3]*u3*u3;
+            Real gammasq = 1.0 + tmp;
+            Real b = glower[0][1]*u1 + glower[0][2]*u2new + glower[0][3]*u3;
+            Real u0new = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
+
+            uu1 = u1    - gupper[0][1]/gupper[0][0] * u0new;
+            uu2 = u2new - gupper[0][2]/gupper[0][0] * u0new;
+            uu3 = u3    - gupper[0][3]/gupper[0][0] * u0new;
+        }
+        w0_(m,IM1,k,je+j+1,i) = uu1;
+        w0_(m,IM2,k,je+j+1,i) = uu2;
+        w0_(m,IM3,k,je+j+1,i) = uu3;
+
+      }else{//use normal frame velocity to determine inflow
+          w0_(m,IM1,k,(je+j+1),i) = w0_(m,IM1,k,je,i);
+          w0_(m,IM2,k,(je+j+1),i) = fmax(0.0, w0_(m,IM2,k,je,i));
+          w0_(m,IM3,k,(je+j+1),i) = w0_(m,IM3,k,je,i);
+      }
+    }//close outer x2 boundary
+  });//close par for 
 
   if (is_radiation_enabled) {
     // Set X2-BCs on i0 if Meshblock face is at the edge of computational domain
@@ -752,8 +952,8 @@ void FixedStreamInflow(Mesh *pm) {
   pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),js-ng,js-1,0,(n3-1));
   pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),je+1,je+ng,0,(n3-1));
 
-  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),0,(n2-1),ks-ng,ks-1);
-  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),0,(n2-1),ke+1,ke+ng);
+  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),0,(n2-1),ks-ng,ks);
+  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),0,(n2-1),ke,ke+ng);
   par_for("fixed_ix3", DevExeSpace(),0,(nmb-1),0,(ng-1),0,(n2-1),0,(n1-1),
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     // inner x3 boundary
@@ -767,30 +967,103 @@ void FixedStreamInflow(Mesh *pm) {
 
     Real &x3min = size.d_view(m).x3min;
     Real &x3max = size.d_view(m).x3max;
-    Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+    Real x3v = CellCenterX((ks-k-1)-ks, indcs.nx3, x3min, x3max);
 
     //Real rho, pgas, uu1, uu2, uu3;
     if (mb_bcs.d_view(m,BoundaryFace::inner_x3) == BoundaryFlag::user) {
       //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_,rho,pgas,uu1,uu2,uu3);
       w0_(m,IDN,ks-k-1,j,i) = w0_(m,IDN,ks,j,i);
       w0_(m,IEN,ks-k-1,j,i) = w0_(m,IEN,ks,j,i);
-      w0_(m,IM1,ks-k-1,j,i) = w0_(m,IM1,ks,j,i);
-      w0_(m,IM2,ks-k-1,j,i) = w0_(m,IM2,ks,j,i);
-      w0_(m,IM3,ks-k-1,j,i) = fmin(0.0, w0_(m,IM3,ks,j,i));
-    }
+
+      if (tde_.bc_4vel){ //use 4-velocity to determine inflow
+        Real glower[4][4], gupper[4][4];
+    ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin,
+          glower, gupper);
+        Real uu1 = w0_(m,IM1,ks,j,i);
+        Real uu2 = w0_(m,IM2,ks,j,i);
+        Real uu3 = w0_(m,IM3,ks,j,i);
+        Real q = glower[1][1]*uu1*uu1 +2.0*glower[1][2]*uu1*uu2 +2.0*glower[1][3]*uu1*uu3
+                 + glower[2][2]*uu2*uu2 +2.0*glower[2][3]*uu2*uu3
+                 + glower[3][3]*uu3*uu3;
+        Real alpha = sqrt(-1.0/gupper[0][0]);
+        Real gamma = sqrt(1.0 + q);
+        Real u0 = gamma / alpha;
+        Real u1 = uu1 + gupper[0][1]/gupper[0][0] * u0;
+        Real u2 = uu2 + gupper[0][2]/gupper[0][0] * u0;
+        Real u3 = uu3 + gupper[0][3]/gupper[0][0] * u0;
+
+        if (u3 > 0.0){ // inflow at inner x3
+            Real u3new = 0.0;
+            Real tmp = glower[1][1]*u1*u1 + 2.0*glower[1][2]*u1*u2 + 2.0*glower[1][3]*u1*u3new
+                     + glower[2][2]*u2*u2 + 2.0*glower[2][3]*u2*u3new
+                     + glower[3][3]*u3new*u3new;
+            Real gammasq = 1.0 + tmp;
+            Real b = glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3new;
+            Real u0new = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
+
+            uu1 = u1    - gupper[0][1]/gupper[0][0] * u0new;
+            uu2 = u2    - gupper[0][2]/gupper[0][0] * u0new;
+            uu3 = u3new - gupper[0][3]/gupper[0][0] * u0new;
+        }
+        w0_(m,IM1,ks-k-1,j,i) = uu1;
+        w0_(m,IM2,ks-k-1,j,i) = uu2;
+        w0_(m,IM3,ks-k-1,j,i) = uu3;
+      }else{ //use normal frame velocity to determine inflow
+          w0_(m,IM1,ks-k-1,j,i) = w0_(m,IM1,ks,j,i);
+          w0_(m,IM2,ks-k-1,j,i) = w0_(m,IM2,ks,j,i);
+          w0_(m,IM3,ks-k-1,j,i) = fmin(0.0, w0_(m,IM3,ks,j,i));
+      }
+    }//close inner x3
 
     // outer x3 boundary
-    x3v = CellCenterX((ke+k+1)-ks, indcs.nx3, x3min, x3max);
+    x3v = CellCenterX((ke+k+1)-ks, indcs.nx3, x3min, x3max); 
 
     if (mb_bcs.d_view(m,BoundaryFace::outer_x3) == BoundaryFlag::user) {
       //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_,rho,pgas,uu1,uu2,uu3);
       w0_(m,IDN,(ke+k+1),j,i) = w0_(m,IDN,ke,j,i);
       w0_(m,IEN,(ke+k+1),j,i) = w0_(m,IEN,ke,j,i);
-      w0_(m,IM1,(ke+k+1),j,i) = w0_(m,IM1,ke,j,i);
-      w0_(m,IM2,(ke+k+1),j,i) = w0_(m,IM2,ke,j,i);
-      w0_(m,IM3,(ke+k+1),j,i) = fmax(0.0, w0_(m,IM3,ke,j,i));
-    }
-  });
+
+      if (tde_.bc_4vel){ //use 4-velocity to determine inflow
+        Real glower[4][4], gupper[4][4];
+    ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin,
+          glower, gupper);
+        Real uu1 = w0_(m,IM1,ke,j,i);
+        Real uu2 = w0_(m,IM2,ke,j,i);
+        Real uu3 = w0_(m,IM3,ke,j,i);
+        Real q = glower[1][1]*uu1*uu1 +2.0*glower[1][2]*uu1*uu2 +2.0*glower[1][3]*uu1*uu3
+                 + glower[2][2]*uu2*uu2 +2.0*glower[2][3]*uu2*uu3
+                 + glower[3][3]*uu3*uu3;
+        Real alpha = sqrt(-1.0/gupper[0][0]);
+        Real gamma = sqrt(1.0 + q);
+        Real u0 = gamma / alpha;
+        Real u1 = uu1 + gupper[0][1]/gupper[0][0] * u0;
+        Real u2 = uu2 + gupper[0][2]/gupper[0][0] * u0;
+        Real u3 = uu3 + gupper[0][3]/gupper[0][0] * u0;
+
+        if (u3 < 0.0){ // inflow at outer x3
+          Real u3new = 0.0;
+          Real tmp = glower[1][1]*u1*u1 + 2.0*glower[1][2]*u1*u2 + 2.0*glower[1][3]*u1*u3new
+                   + glower[2][2]*u2*u2 + 2.0*glower[2][3]*u2*u3new
+                   + glower[3][3]*u3new*u3new;
+          Real gammasq = 1.0 + tmp;
+          Real b = glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3new;
+          Real u0new = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
+
+          uu1 = u1    - gupper[0][1]/gupper[0][0] * u0new;
+          uu2 = u2    - gupper[0][2]/gupper[0][0] * u0new;
+          uu3 = u3new - gupper[0][3]/gupper[0][0] * u0new;
+        }
+        w0_(m,IM1,ke+k+1,j,i) = uu1;
+        w0_(m,IM2,ke+k+1,j,i) = uu2;
+        w0_(m,IM3,ke+k+1,j,i) = uu3;
+
+      }else{
+          w0_(m,IM1,(ke+k+1),j,i) = w0_(m,IM1,ke,j,i);
+          w0_(m,IM2,(ke+k+1),j,i) = w0_(m,IM2,ke,j,i);
+          w0_(m,IM3,(ke+k+1),j,i) = fmax(0.0, w0_(m,IM3,ke,j,i));
+      }
+    }//close outer x3
+  });//close par for
 
   if (is_radiation_enabled) {
     // Set X3-BCs on i0 if Meshblock face is at the edge of computational domain
@@ -1035,7 +1308,7 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
         if (dr_now <= tde_.r_inj_thresh_coarse) {
           Real dx2 = (size.d_view(m).x2max - size.d_view(m).x2min) / indcs.nx2;
           Real dx3 = (size.d_view(m).x3max - size.d_view(m).x3min) / indcs.nx3;
-          lsum += tde_.local_dens * fabs(tde_.vx1_inj) * dx2 * dx3;
+          lsum += tde_.local_dens * fabs(tde_.ux1_inj) * dx2 * dx3; //approximation
         }
       }
     }, mdot_inj);
@@ -1050,6 +1323,24 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
   }
 
   return;
+}
+//----------------------------------------------------------------------------------------
+//! \fn void RefinementCondition()
+//! Implements custom AMR refinement condition
+void RefinementCondition(MeshBlockPack* pmbp) {
+  auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
+  int nmb = pmbp->nmb_thispack;
+  int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
+
+  par_for_outer("UserProblem_AMR::REFCOND", DevExeSpace(), 0, 0, 0, (nmb - 1),
+  KOKKOS_LAMBDA(TeamMember_t tmember, const int m) {
+    //Placeholder (does nothing for now)
+    refine_flag.d_view(m + mbs) = 0;
+  });
+
+  // sync host and device
+  refine_flag.template modify<DevExeSpace>();
+  refine_flag.template sync<HostMemSpace>();
 }
 
 namespace{
@@ -1093,4 +1384,26 @@ void GetMdot(const tde_pgen &tde, Real t_now, Real &mdot_now){
   mdot_now = mdot_now_msunyr * (msun_cgs / yr_cgs) / (tde.m_unit / tde.t_unit);
 
 }
+
+//----------------------------------------------------------------------------------------
+// Function for returning corresponding Boyer-Lindquist coordinates of point
+// Inputs:
+//   x1,x2,x3: global coordinates to be converted
+// Outputs:
+//   pr,ptheta,pphi: variables pointed to set to Boyer-Lindquist coordinates
+
+KOKKOS_INLINE_FUNCTION
+static void GetBoyerLindquistCoordinates(Real spin,
+                                         Real x1, Real x2, Real x3,
+                                         Real *pr, Real *ptheta, Real *pphi) {
+  Real rad = sqrt(SQR(x1) + SQR(x2) + SQR(x3));
+  Real r = fmax((sqrt( SQR(rad) - SQR(spin) + sqrt(SQR(SQR(rad)-SQR(spin))
+                      + 4.0*SQR(spin)*SQR(x3)) ) / sqrt(2.0)), 1.0);
+  *pr = r;
+  *ptheta = (fabs(x3/r) < 1.0) ? acos(x3/r) : acos(copysign(1.0, x3));
+  *pphi = atan2(r*x2-spin*x1, spin*x2+r*x1) -
+          spin*r/(SQR(r)-2.0*r+SQR(spin));
+  return;
+}
+
 }
