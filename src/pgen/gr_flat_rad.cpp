@@ -51,6 +51,8 @@ struct tde_pgen{
   Real local_dens, local_temp;
   int bc_4vel; //Use 4-velocity to set no-inflow boundary conditions
   int init_4vel; //Set 4-velocity to zero at initialization
+  int rad_dom_lim; //radiation dominated limit to set internal energy
+  Real arad_code; //radiation constant a in code units a'=a/a0, used for hydro only (if rad_dom_lim)
 
   //stream density structure
   int uniform_stream; //flag for uniform density
@@ -153,6 +155,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   tde.inj_cell_debug = pin->GetOrAddInteger("problem", "inj_cell_debug", 0);
   tde.bc_4vel = pin->GetOrAddInteger("problem", "bc_4vel", 0);
   tde.init_4vel = pin->GetOrAddInteger("problem", "init_4vel", 0);
+  tde.rad_dom_lim = pin->GetOrAddInteger("problem", "rad_dom_lim", 0);
+  tde.arad_code = pin->GetOrAddReal("problem", "arad_code", 0.0);
 
   //if radiation
   if (pmbp->prad != nullptr){
@@ -435,6 +439,11 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       Real den = tde_.d_amb;
       Real pres = tde_.p_amb;
 
+      if (!is_radiation_enabled && tde_.rad_dom_lim){
+        Real Tcode = pres/den;
+        pres = tde_.arad_code*SQR(SQR(Tcode))/3.0
+      }
+
       // To be consistent with the excision algorithm,
       // we have to recalculate r; we try to avoid excising cells within the horizon which
       // might have a corner sticking out of the horizon.
@@ -702,27 +711,33 @@ void FixedStreamInflow(Mesh *pm) {
 
         }//debug block
 
-	//MRM: similarly here, vxi_inj is calculated by geodesics.py, which are in coordinate frame, transform to normal frame
-	//xs: x1v is ghost cell value, but x2v, x3v still active cell center, should be fine, similar to L430
-	Real u1 = tde_.ux1_inj, u2 = tde_.ux2_inj, u3 = tde_.ux3_inj;
-	Real tmp = glower[1][1]*u1*u1 + 2.0*glower[1][2]*u1*u2 + 2.0*glower[1][3]*u1*u3
-	         + glower[2][2]*u2*u2 + 2.0*glower[2][3]*u2*u3
-	         + glower[3][3]*u3*u3;
-	Real gammasq = 1.0 + tmp;
-	Real b = glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
-	Real u0 = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
-	Real uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
-	Real uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
-	Real uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
+    	//MRM: similarly here, vxi_inj is calculated by geodesics.py, which are in coordinate frame, transform to normal frame
+    	//xs: x1v is ghost cell value, but x2v, x3v still active cell center, should be fine, similar to L430
+    	Real u1 = tde_.ux1_inj, u2 = tde_.ux2_inj, u3 = tde_.ux3_inj;
+    	Real tmp = glower[1][1]*u1*u1 + 2.0*glower[1][2]*u1*u2 + 2.0*glower[1][3]*u1*u3
+    	         + glower[2][2]*u2*u2 + 2.0*glower[2][3]*u2*u3
+    	         + glower[3][3]*u3*u3;
+    	Real gammasq = 1.0 + tmp;
+    	Real b = glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
+    	Real u0 = (-b - sqrt(fmax(SQR(b) - glower[0][0]*gammasq, 0.0)))/glower[0][0];
+    	Real uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
+    	Real uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
+    	Real uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
+
+        Real press_stream = dens_now * tde_.local_temp;
+
+        if (!is_radiation_enabled && tde_.rad_dom_lim){
+          press_stream = tde_.arad_code*SQR(SQR(tde_.local_temp))/3.0
+        }
 
         w0_(m,IDN,k,j,(ie+i+1)) = dens_now;
-        w0_(m,IEN,k,j,(ie+i+1)) = dens_now * tde_.local_temp / (g_gamma-1.0);
+        w0_(m,IEN,k,j,(ie+i+1)) = press_stream / (g_gamma-1.0);
         w0_(m,IM1,k,j,(ie+i+1)) = uu1;
         w0_(m,IM2,k,j,(ie+i+1)) = uu2;
         w0_(m,IM3,k,j,(ie+i+1)) = uu3;
 
         //printf("i:%d, local density:%g, temp:%g, ein:%g\n", ie+i+1, w0_(m,IDN,k,j,(ie+i+1)), w0_(m,IEN,k,j,(ie+i+1))/w0_(m,IDN,k,j,(ie+i+1))/(g_gamma-1.0), w0_(m,IEN,k,j,(ie+i+1)));
-      }else{
+      }else{//non-injection cells
         //ComputePrimitiveSingle(x1v,x2v,x3v,coord,bondi_, rho,pgas,uu1,uu2,uu3);
         w0_(m,IDN,k,j,(ie+i+1)) = w0_(m,IDN,k,j,ie);
         w0_(m,IEN,k,j,(ie+i+1)) = w0_(m,IEN,k,j,ie);
