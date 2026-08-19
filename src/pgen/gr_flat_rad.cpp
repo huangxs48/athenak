@@ -196,7 +196,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, tde.hst_radii_2));
 
   user_hist_func = TDEFluxes;
-  user_ref_func  = RefinementCondition;
+  //user_ref_func  = RefinementCondition;
 
   //-------------------------------
   // load opacity table, write them into an opacitydata instance, so all devices can access to them
