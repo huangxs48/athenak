@@ -78,7 +78,7 @@ void UserOpacityFunction(// density and density scale
   Real temp_cgs = temp * temperature_scale;
   
   InterpolateKappa(n_rho, n_temp, rho_grid, temp_grid, kappa_ross, kappa_planck,
-                   dens_cgs, temp_cgs, kappa_ross_interp, kappa_planck_interp);
+                   dens_cgs, temp_cgs, k_s, kappa_ross_interp, kappa_planck_interp);
   
   //if (dens_cgs>1.0e-14){
   //    printf("current density: %g, temperature: %g, kappa_ross: %g, kappa_planck: %g\n", dens_cgs, temp_cgs, kappa_ross_interp, kappa_planck_interp);
@@ -87,24 +87,24 @@ void UserOpacityFunction(// density and density scale
   Real kappa_ross_cgs = 0.0;
   Real kappa_sct_cgs = 0.0;
   Real temp_ion_cgs = 1.0e4;
+  Real temp_recomb_cgs = 3.0e3; //below this H is neutral, no scattering
   Real temp_ion = temp_ion_cgs/temperature_scale;
 
   //k_s is in c.g.s
-  if (kappa_ross_interp > k_s){
-    kappa_ross_cgs = kappa_ross_interp - k_s;
-    kappa_sct_cgs = k_s;
+  if (kappa_ross_interp >= k_s){ //T>Tmax case always enters this branch
+    if (temp_cgs > temp_recomb_cgs){
+      kappa_ross_cgs = fmax(kappa_ross_interp - k_s, 0.0);
+      kappa_sct_cgs = k_s;
+    }else{//cold dense gas past H recombination, pure absorption
+      kappa_ross_cgs = kappa_ross_interp;
+      kappa_sct_cgs = 0.0;
+    }
   }else{ //if tabulated rosseland mean < scatter  
     if (temp_cgs < temp_ion_cgs){//below ionization temperature, no scatter opacity
       kappa_ross_cgs = kappa_ross_interp;
       kappa_sct_cgs = 0.0;
     }else{
-      //the opacity for high temperature region is set to scatter
-      //also note that previously the kappa_ross_interp is extrapolated
-      //with Krammer's law-type of dependence, can cause high temperature
-      //region show small extrapolated kappa_ross_interp.
-      //(TODO) make extrapolation as a flag, make this kappa_sct_cgs
-      //as a flag.
-      kappa_sct_cgs = k_s; //kappa_ross_interp;
+      kappa_sct_cgs = kappa_ross_interp;
       kappa_ross_cgs = 0.0;
     }
   }

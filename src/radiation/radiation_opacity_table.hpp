@@ -108,7 +108,7 @@ void InterpolateKappa(int n_rho, int n_temp,
                       const Kokkos::View<Real*>& temp_grid,
                       const Kokkos::View<Real**>& kappa_ross_tab,
                       const Kokkos::View<Real**>& kappa_planck_tab,
-                      Real rho, Real tgas, Real &kappa_ross, Real &kappa_planck){
+                      Real rho, Real tgas, Real k_s, Real &kappa_ross, Real &kappa_planck){
   //std::cout<<"InterpolateKappa called!"<<std::endl;
 
   // // quick check the readings
@@ -178,10 +178,15 @@ void InterpolateKappa(int n_rho, int n_temp,
   Real logtlim_table = log10(temp_grid(n_temp-1));
   if(nt2 == n_temp-1 && (logt > logtlim_table)){
     Real scaling = pow(10.0, -3.5*(logt - logtlim_table));
-    kappa_t1_rho1_gray *= scaling;
-    kappa_t1_rho2_gray *= scaling;
-    kappa_t2_rho1_gray *= scaling;
-    kappa_t2_rho2_gray *= scaling;
+    //Rosseland from table includes scattering, scale absorption piece only
+    Real ka_11 = fmax(kappa_t1_rho1_gray - k_s, 0.0);
+    Real ka_12 = fmax(kappa_t1_rho2_gray - k_s, 0.0);
+    Real ka_21 = fmax(kappa_t2_rho1_gray - k_s, 0.0);
+    Real ka_22 = fmax(kappa_t2_rho2_gray - k_s, 0.0);
+    kappa_t1_rho1_gray = ka_11 * scaling + k_s;
+    kappa_t1_rho2_gray = ka_12 * scaling + k_s;
+    kappa_t2_rho1_gray = ka_21 * scaling + k_s;
+    kappa_t2_rho2_gray = ka_22 * scaling + k_s;
     
     planck_t1_rho1_gray *= scaling;
     planck_t1_rho2_gray *= scaling;
