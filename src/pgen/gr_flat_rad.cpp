@@ -196,7 +196,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   grids.push_back(std::make_unique<SphericalGrid>(pmbp, sph_grid_level, tde.hst_radii_2));
 
   user_hist_func = TDEFluxes;
-  //user_ref_func  = RefinementCondition;
+  user_ref_func  = RefinementCondition;
 
   //-------------------------------
   // load opacity table, write them into an opacitydata instance, so all devices can access to them
@@ -1328,8 +1328,8 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
 //! \fn void RefinementCondition()
 //! Implements custom AMR refinement condition
 void RefinementCondition(MeshBlockPack* pmbp) {
-  auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
-  int nmb = pmbp->nmb_thispack;
+  //auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
+  /*int nmb = pmbp->nmb_thispack;
   int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
 
   par_for_outer("UserProblem_AMR::REFCOND", DevExeSpace(), 0, 0, 0, (nmb - 1),
@@ -1340,7 +1340,8 @@ void RefinementCondition(MeshBlockPack* pmbp) {
 
   // sync host and device
   refine_flag.template modify<DevExeSpace>();
-  refine_flag.template sync<HostMemSpace>();
+  refine_flag.template sync<HostMemSpace>();*/
+  return;
 }
 
 namespace{
