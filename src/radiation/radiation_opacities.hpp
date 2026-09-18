@@ -98,7 +98,13 @@ void UserOpacityFunction(// density and density scale
       kappa_ross_cgs = kappa_ross_interp;
       kappa_sct_cgs = 0.0;
     }else{
-      kappa_sct_cgs = kappa_ross_interp;
+      //the opacity for high temperature region is set to scatter
+      //also note that previously the kappa_ross_interp is extrapolated
+      //with Krammer's law-type of dependence, can cause high temperature
+      //region show small extrapolated kappa_ross_interp.
+      //(TODO) make extrapolation as a flag, make this kappa_sct_cgs
+      //as a flag.
+      kappa_sct_cgs = k_s; //kappa_ross_interp;
       kappa_ross_cgs = 0.0;
     }
   }
