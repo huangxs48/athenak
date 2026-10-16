@@ -106,6 +106,11 @@ Real kappa_ff_ross(Real temp, Real rho){
   return kappa_cgs;
 }
 
+//Klein-Nishina suppression of the electron-scattering opacity. Fit by Paczynski (1983) to the Compton-scattering opacities of  Buchler & Yueh (1976)
+KOKKOS_INLINE_FUNCTION
+Real kappa_es_kn(Real k_s, Real temp_cgs) {
+  return k_s / (1.0 + pow(temp_cgs/4.5e8, 0.86));
+}
 
 // Interpolation function, directly read views instead of OpacityData structure
 KOKKOS_INLINE_FUNCTION
@@ -160,24 +165,24 @@ void InterpolateKappa(int n_rho, int n_temp,
   Real lkp_21 = log_kappa_planck_tab(nt2,nrho1);
   Real lkp_22 = log_kappa_planck_tab(nt2,nrho2);
 
-  //STEP 4: Kramers T^-3.5 extrapolation above Tmax
-  //  Rosseland includes scattering: scale only (kappa - k_s) absorption piece
+  //STEP 4: extrapolation above Tmax.
+  //  Planck: pure absorption, Kramers T^-3.5.  Verified against this table --
+  //    d log kappa_P / d log T at the top is -3.509 at every one of the 100
+  //    density columns, independent of how many rows the fit uses.
+  //  Rosseland: at Tmax the table is PURE SCATTERING 
+  //   so continue it by the KN RATIO.
+  //  NOTE: the pure-scattering claim is a property of THIS table. If the table
+  //    is replaced, re-check that its top row is density-independent before
+  //    trusting the ratio form.
   if (logT > log_tmax) {
     Real logscale = -3.5 * (logT - log_tmax);
-    Real scale    = pow(10.0, logscale);
+    Real log_knr  = log10(kappa_es_kn(k_s, tgas)
+                        / kappa_es_kn(k_s, pow(10.0, log_tmax)));
 
-    Real kr_11 = pow(10.0, lkr_11);
-    Real kr_12 = pow(10.0, lkr_12);
-    Real kr_21 = pow(10.0, lkr_21);
-    Real kr_22 = pow(10.0, lkr_22);
-    Real ka_11 = fmax(kr_11 - k_s, 0.0);
-    Real ka_12 = fmax(kr_12 - k_s, 0.0);
-    Real ka_21 = fmax(kr_21 - k_s, 0.0);
-    Real ka_22 = fmax(kr_22 - k_s, 0.0);
-    lkr_11 = log10(ka_11 * scale + k_s);
-    lkr_12 = log10(ka_12 * scale + k_s);
-    lkr_21 = log10(ka_21 * scale + k_s);
-    lkr_22 = log10(ka_22 * scale + k_s);
+    lkr_11 += log_knr;
+    lkr_12 += log_knr;
+    lkr_21 += log_knr;
+    lkr_22 += log_knr;
 
     lkp_11 += logscale;
     lkp_12 += logscale;
@@ -185,7 +190,14 @@ void InterpolateKappa(int n_rho, int n_temp,
     lkp_22 += logscale;
   }
 
-  //STEP 4b: Kramers rho-linear extrapolation for rho < rho_min and T >= T_ion
+  //UPDATE: STEP 4b REMOVED.  There is no longer any rho < rho_min extrapolation.
+  //  UserOpacityFunction() in radiation_opacities.hpp now floors every cell
+  //  below the table's rho_min, at all temperatures, so nothing reaching this
+  //  function can have logrho < log_rhomin and the branch was unreachable.
+  //  Do not restore this without checking at which temperature in a given table  //  the slope is actually Kramers. For the table tested it was above ~4e6K.
+  //  If table is to be extended, extrapolate with edge slope at each T row.
+  
+  /*//STEP 4b: Kramers rho-linear extrapolation for rho < rho_min and T >= T_ion
   //   Below the table's rho_min we extrapolate the absorption
   //  piece linearly in rho; scattering (k_s) stays fixed.
   // Gated by T >= 1e4 K where Kramers applies,
@@ -214,7 +226,7 @@ void InterpolateKappa(int n_rho, int n_temp,
     lkp_12 += log_rho_offset;
     lkp_21 += log_rho_offset;
     lkp_22 += log_rho_offset;
-  }
+  }*/
 
   //STEP 5: log-space bilinear
   Real w11 = (1.0 - fT) * (1.0 - frho);

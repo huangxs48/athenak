@@ -82,11 +82,17 @@ void UserOpacityFunction(// density and density scale
   Real temp_cgs = temp * temperature_scale;
   Real temp_recomb_cgs = 3.0e3; //below this H is neutral, no scattering
 
-  //Apply opacity floors for background gas (e.g. 10d_amb and T<1e4K)
-  if (dens_cgs < low_rho_threshold_cgs && temp_cgs < low_temp_threshold_cgs){
+  //Everything below the table's lowest density is grid filler, not modelled
+  // gas, and is made transparent. 
+  //Apply opacity floors for background gas (e.g. 10d_amb)
+  Real rho_floor_cgs = fmax(low_rho_threshold_cgs, pow(10.0, log_rhomin));
+  (void)low_temp_threshold_cgs;  // retained in the signature, no longer used
+
+  if (dens_cgs < rho_floor_cgs){
     Real k_floor = 1.0e-6;
+    
     sigma_a = dens*k_floor*density_scale*length_scale;
-    sigma_p = dens*k_floor*density_scale*length_scale;
+    sigma_p = 0.0;
     sigma_s = 0.0;
     return;
   }
@@ -104,7 +110,7 @@ void UserOpacityFunction(// density and density scale
   Real temp_ion_cgs = 1.0e4;
 
   //k_s is in c.g.s
-  if (kappa_ross_interp >= k_s){ //T>Tmax case always enters this branch
+  if (kappa_ross_interp >= k_s){
     if (temp_cgs > temp_recomb_cgs){
       kappa_ross_cgs = fmax(kappa_ross_interp - k_s, 0.0);
       kappa_sct_cgs = k_s;

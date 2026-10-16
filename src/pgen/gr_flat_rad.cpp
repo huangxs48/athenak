@@ -282,8 +282,12 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
       std::ifstream fin(tde.read_kappa_name);
       if (!fin.is_open()) {
-        std::cerr << "Error opening opacity file" << tde.read_kappa_name<<std::endl;
-        return;
+        if (global_variable::my_rank == 0) {
+          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                    << std::endl << "Error opening opacity file "
+                    << tde.read_kappa_name << std::endl;
+        }
+        exit(EXIT_FAILURE);
       }
 
       // skip first two integers
@@ -292,12 +296,20 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
    
       // quick sanity check
       if (n_rho_read!=n_rho){
-        std::cerr<<"opacity file n_rho is:"<<n_rho_read<<", but input file n_rho is:"<<n_rho<<std::endl;
-        return;
+        if (global_variable::my_rank == 0) {
+          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                    << std::endl << "opacity file n_rho is:" << n_rho_read
+                    << ", but input file n_rho is:" << n_rho << std::endl;
+        }
+        exit(EXIT_FAILURE);
       }
       if (n_temp_read!=n_temp){
-        std::cerr<<"opacity file n_temp is:"<<n_temp_read<<", but input file n_temp is:"<<n_temp<<std::endl;
-        return;
+        if (global_variable::my_rank == 0) {
+          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                    << std::endl << "opacity file n_temp is:" << n_temp_read
+                    << ", but input file n_temp is:" << n_temp << std::endl;
+        }
+        exit(EXIT_FAILURE);
       }
 
       // load temperature grid
@@ -373,17 +385,25 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     for (int i = 1; i < n_temp; ++i) {
       Real d = std::log10(temp_host(i)) - std::log10(temp_host(i-1));
       if (std::fabs(d - dlogT_expected) > tol) {
-        std::cerr << "opacity temp_grid is not uniform in log10 (at i=" << i
-                  << ", d=" << d << ", expected=" << dlogT_expected << ")" << std::endl;
-        return;
+        if (global_variable::my_rank == 0) {
+          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                    << std::endl << "opacity temp_grid is not uniform in log10 (at i="
+                    << i << ", d=" << d << ", expected=" << dlogT_expected << ")"
+                    << std::endl;
+        }
+        exit(EXIT_FAILURE);
       }
     }
     for (int i = 1; i < n_rho; ++i) {
       Real d = std::log10(rho_host(i)) - std::log10(rho_host(i-1));
       if (std::fabs(d - dlogR_expected) > tol) {
-        std::cerr << "opacity rho_grid is not uniform in log10 (at i=" << i
-                  << ", d=" << d << ", expected=" << dlogR_expected << ")" << std::endl;
-        return;
+       if (global_variable::my_rank == 0) {
+          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                    << std::endl << "opacity rho_grid is not uniform in log10 (at i="
+                    << i << ", d=" << d << ", expected=" << dlogR_expected << ")"
+                    << std::endl;
+        }
+        exit(EXIT_FAILURE);
       }
     }
 
@@ -401,6 +421,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     }
 
     /*// SANITY CHECK
+    if (global_variable::my_rank == 0) {
     std::cout << "[opcheck loader] n_temp=" << n_temp << " n_rho=" << n_rho
               << " log_tmin=" << log_tmin << " log_tmax=" << log_tmax
               << " log_rhomin=" << log_rhomin << " log_rhomax=" << log_rhomax
@@ -415,6 +436,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
               << " log kR(0,nr-1)="  << kappa_ross_host(0,n_rho-1)
               << " log kR(nt-1,nr-1)=" << kappa_ross_host(n_temp-1,n_rho-1)
               << std::endl;
+     }
     // END SANITY CHECK */
 
 
