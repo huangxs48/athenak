@@ -172,40 +172,36 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     //check AMR level-cap parameters
     int maxlvl = pmy_mesh_->max_level - pmy_mesh_->root_level;
     if (tde.amr_r_mid >= tde.amr_r_out) {
-      if (global_variable::my_rank == 0) {
-        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                  << std::endl << "Require amr_r_mid < amr_r_out, but amr_r_mid="
-                  << tde.amr_r_mid << " amr_r_out=" << tde.amr_r_out << std::endl;
-      }
+      std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                << " in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "Require amr_r_mid < amr_r_out, but amr_r_mid="
+                << tde.amr_r_mid << " amr_r_out=" << tde.amr_r_out << std::endl;
       exit(EXIT_FAILURE);
     }
     if (tde.amrlvl_in  < 0 || tde.amrlvl_in  > maxlvl ||
         tde.amrlvl_mid < 0 || tde.amrlvl_mid > maxlvl ||
         tde.amrlvl_out < 0 || tde.amrlvl_out > maxlvl) {
-      if (global_variable::my_rank == 0) {
-        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                  << std::endl << "amrlvl_in/mid/out must be within [0," << maxlvl
-                  << "], but are " << tde.amrlvl_in << "/" << tde.amrlvl_mid << "/"
-                  << tde.amrlvl_out << std::endl;
-      }
+      std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                << " in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "amrlvl_in/mid/out must be within [0," << maxlvl
+                << "], but are " << tde.amrlvl_in << "/" << tde.amrlvl_mid << "/"
+                << tde.amrlvl_out << std::endl;
       exit(EXIT_FAILURE);
     }
     if (tde.amrlvl_in < tde.amrlvl_mid || tde.amrlvl_mid < tde.amrlvl_out) {
-      if (global_variable::my_rank == 0) {
-        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                  << std::endl << "Require amrlvl_in >= amrlvl_mid >= amrlvl_out, but "
-                  << "are " << tde.amrlvl_in << "/" << tde.amrlvl_mid << "/"
-                  << tde.amrlvl_out << std::endl;
-      }
+      std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                << " in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "Require amrlvl_in >= amrlvl_mid >= amrlvl_out, but "
+                << "are " << tde.amrlvl_in << "/" << tde.amrlvl_mid << "/"
+                << tde.amrlvl_out << std::endl;
       exit(EXIT_FAILURE);
     }
     if ((tde.amrlvl_in - tde.amrlvl_mid) > 1 || (tde.amrlvl_mid - tde.amrlvl_out) > 1) {
-      if (global_variable::my_rank == 0) {
-        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                  << std::endl << "Adjacent amrlvl_* must differ by at most 1 to respect "
-                  << "2:1 nesting, but are " << tde.amrlvl_in << "/" << tde.amrlvl_mid
-                  << "/" << tde.amrlvl_out << std::endl;
-      }
+      std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                << " in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "Adjacent amrlvl_* must differ by at most 1 to respect "
+                << "2:1 nesting, but are " << tde.amrlvl_in << "/" << tde.amrlvl_mid
+                << "/" << tde.amrlvl_out << std::endl;
       exit(EXIT_FAILURE);
     }
   }
@@ -282,11 +278,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
       std::ifstream fin(tde.read_kappa_name);
       if (!fin.is_open()) {
-        if (global_variable::my_rank == 0) {
-          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                    << std::endl << "Error opening opacity file "
-                    << tde.read_kappa_name << std::endl;
-        }
+        std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                  << " in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "Error opening opacity file "
+                  << tde.read_kappa_name << std::endl;
         exit(EXIT_FAILURE);
       }
 
@@ -296,19 +291,17 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
    
       // quick sanity check
       if (n_rho_read!=n_rho){
-        if (global_variable::my_rank == 0) {
-          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                    << std::endl << "opacity file n_rho is:" << n_rho_read
-                    << ", but input file n_rho is:" << n_rho << std::endl;
-        }
+        std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                  << " in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "opacity file n_rho is:" << n_rho_read
+                  << ", but input file n_rho is:" << n_rho << std::endl;
         exit(EXIT_FAILURE);
       }
       if (n_temp_read!=n_temp){
-        if (global_variable::my_rank == 0) {
-          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                    << std::endl << "opacity file n_temp is:" << n_temp_read
-                    << ", but input file n_temp is:" << n_temp << std::endl;
-        }
+        std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                  << " in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "opacity file n_temp is:" << n_temp_read
+                  << ", but input file n_temp is:" << n_temp << std::endl;
         exit(EXIT_FAILURE);
       }
 
@@ -385,24 +378,22 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     for (int i = 1; i < n_temp; ++i) {
       Real d = std::log10(temp_host(i)) - std::log10(temp_host(i-1));
       if (std::fabs(d - dlogT_expected) > tol) {
-        if (global_variable::my_rank == 0) {
-          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                    << std::endl << "opacity temp_grid is not uniform in log10 (at i="
-                    << i << ", d=" << d << ", expected=" << dlogT_expected << ")"
-                    << std::endl;
-        }
+        std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                  << " in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "opacity temp_grid is not uniform in log10 (at i="
+                  << i << ", d=" << d << ", expected=" << dlogT_expected << ")"
+                  << std::endl;
         exit(EXIT_FAILURE);
       }
     }
     for (int i = 1; i < n_rho; ++i) {
       Real d = std::log10(rho_host(i)) - std::log10(rho_host(i-1));
       if (std::fabs(d - dlogR_expected) > tol) {
-       if (global_variable::my_rank == 0) {
-          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                    << std::endl << "opacity rho_grid is not uniform in log10 (at i="
-                    << i << ", d=" << d << ", expected=" << dlogR_expected << ")"
-                    << std::endl;
-        }
+        std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                  << " in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "opacity rho_grid is not uniform in log10 (at i="
+                  << i << ", d=" << d << ", expected=" << dlogR_expected << ")"
+                  << std::endl;
         exit(EXIT_FAILURE);
       }
     }
