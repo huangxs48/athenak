@@ -123,7 +123,12 @@ void UserOpacityFunction(// density and density scale
       kappa_ross_cgs = kappa_ross_interp;
       kappa_sct_cgs = 0.0;
     }else{
-      kappa_sct_cgs = kappa_ross_interp;
+      // Klein-Nishina in TOPS Rosseland mean applies in the diffusion limit Tgas~Trad
+      // Our TDE problem has T_rad<<max(T_gas) so it doesnt apply here.
+      // If a run ever puts T_gas > 1e8 K at tau_eff >> 1, the tabulated KN
+      // value is the correct one and this must be gated on the local
+      // radiation temperature instead of overridden unconditionally.
+      kappa_sct_cgs = fmax(kappa_ross_interp, k_s);
       kappa_ross_cgs = 0.0;
     }
   }

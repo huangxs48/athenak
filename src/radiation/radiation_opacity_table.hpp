@@ -174,6 +174,12 @@ void InterpolateKappa(int n_rho, int n_temp,
   //  NOTE: the pure-scattering claim is a property of THIS table. If the table
   //    is replaced, re-check that its top row is density-independent before
   //    trusting the ratio form.
+  //  NOTE 2: the KN ratio applied below no longer reaches the solver.
+  //  Scattering is overwritten with the Thomson value
+  //  because in the TDE problem Trad << max(Tgas)
+  //  but KN in TOPS' Rosseland assumes Tgas~Trad (diffusion limit)
+  //  The scaling is kept because it correctly describes the table though.
+  //  If Trad ever reaches KN temperatures, change radiation_opacities.hpp
   if (logT > log_tmax) {
     Real logscale = -3.5 * (logT - log_tmax);
     Real log_knr  = log10(kappa_es_kn(k_s, tgas)
