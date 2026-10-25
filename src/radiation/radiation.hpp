@@ -106,6 +106,10 @@ class Radiation {
   bool is_compton_enabled;  // flag to enable/disable compton
   //xs: add user opacity funtction
   bool user_opacity;        // flag to enable/disable user-defined opacity
+  Real low_rho_threshold_cgs; // density below which opacity floors are applied (cgs)
+  Real low_temp_threshold_cgs; // temperature below which opacity floors are applied (cgs)
+   // SANITY CHECK counter (comment out block in radiation_source.cpp to disable)
+  Kokkos::View<int*> opcheck_counter;
   
   // radiation source term (i.e., beam)
   SourceTerms *psrc = nullptr;

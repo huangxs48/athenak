@@ -59,6 +59,13 @@ struct tde_pgen{
   Real h_stream; //scale height
   int inj_cell_debug; //flag to bookkeep injection cells
 
+  //user amr condition
+  Real amr_maxdens, amr_mindens;
+  Real amr_maxd2, amr_mind2;
+  Real amr_zmax;
+  Real amr_r_mid, amr_r_out;
+  int amrlvl_in, amrlvl_mid, amrlvl_out;
+  
   Real hst_radii_1, hst_radii_2;
 
   //opacity table
@@ -149,6 +156,55 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   tde.r_inj_thresh_coarse = pin->GetReal("problem", "r_inj_thresh_coarse");
   tde.hst_radii_1 = pin->GetOrAddReal("problem", "hst_radii_1", 100.0);
   tde.hst_radii_2 = pin->GetOrAddReal("problem", "hst_radii_2", 80.0);
+  //user amr condition
+  if (pmy_mesh_->adaptive) {
+    tde.amr_maxdens = pin->GetReal("problem", "amr_maxdens");
+    tde.amr_mindens = pin->GetReal("problem", "amr_mindens");
+    tde.amr_maxd2   = pin->GetReal("problem", "amr_maxd2");
+    tde.amr_mind2   = pin->GetReal("problem", "amr_mind2");
+    tde.amr_zmax    = pin->GetReal("problem", "amr_zmax");
+    tde.amr_r_mid   = pin->GetReal("problem", "amr_r_mid");
+    tde.amr_r_out   = pin->GetReal("problem", "amr_r_out");
+    tde.amrlvl_in   = pin->GetInteger("problem", "amrlvl_in");
+    tde.amrlvl_mid  = pin->GetInteger("problem", "amrlvl_mid");
+    tde.amrlvl_out  = pin->GetInteger("problem", "amrlvl_out");
+
+    //check AMR level-cap parameters
+    int maxlvl = pmy_mesh_->max_level - pmy_mesh_->root_level;
+    if (tde.amr_r_mid >= tde.amr_r_out) {
+      std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                << " in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "Require amr_r_mid < amr_r_out, but amr_r_mid="
+                << tde.amr_r_mid << " amr_r_out=" << tde.amr_r_out << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    if (tde.amrlvl_in  < 0 || tde.amrlvl_in  > maxlvl ||
+        tde.amrlvl_mid < 0 || tde.amrlvl_mid > maxlvl ||
+        tde.amrlvl_out < 0 || tde.amrlvl_out > maxlvl) {
+      std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                << " in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "amrlvl_in/mid/out must be within [0," << maxlvl
+                << "], but are " << tde.amrlvl_in << "/" << tde.amrlvl_mid << "/"
+                << tde.amrlvl_out << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    if (tde.amrlvl_in < tde.amrlvl_mid || tde.amrlvl_mid < tde.amrlvl_out) {
+      std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                << " in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "Require amrlvl_in >= amrlvl_mid >= amrlvl_out, but "
+                << "are " << tde.amrlvl_in << "/" << tde.amrlvl_mid << "/"
+                << tde.amrlvl_out << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    if ((tde.amrlvl_in - tde.amrlvl_mid) > 1 || (tde.amrlvl_mid - tde.amrlvl_out) > 1) {
+      std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                << " in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "Adjacent amrlvl_* must differ by at most 1 to respect "
+                << "2:1 nesting, but are " << tde.amrlvl_in << "/" << tde.amrlvl_mid
+                << "/" << tde.amrlvl_out << std::endl;
+      exit(EXIT_FAILURE);
+    }
+  }
   //stream structure
   tde.uniform_stream = pin->GetOrAddInteger("problem", "uniform_stream", 1);
   tde.h_stream = pin->GetOrAddReal("problem", "h_stream", 0.01);
@@ -222,8 +278,11 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
       std::ifstream fin(tde.read_kappa_name);
       if (!fin.is_open()) {
-        std::cerr << "Error opening opacity file" << tde.read_kappa_name<<std::endl;
-        return;
+        std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                  << " in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "Error opening opacity file "
+                  << tde.read_kappa_name << std::endl;
+        exit(EXIT_FAILURE);
       }
 
       // skip first two integers
@@ -232,12 +291,18 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
    
       // quick sanity check
       if (n_rho_read!=n_rho){
-        std::cerr<<"opacity file n_rho is:"<<n_rho_read<<", but input file n_rho is:"<<n_rho<<std::endl;
-        return;
+        std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                  << " in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "opacity file n_rho is:" << n_rho_read
+                  << ", but input file n_rho is:" << n_rho << std::endl;
+        exit(EXIT_FAILURE);
       }
       if (n_temp_read!=n_temp){
-        std::cerr<<"opacity file n_temp is:"<<n_temp_read<<", but input file n_temp is:"<<n_temp<<std::endl;
-        return;
+        std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                  << " in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "opacity file n_temp is:" << n_temp_read
+                  << ", but input file n_temp is:" << n_temp << std::endl;
+        exit(EXIT_FAILURE);
       }
 
       // load temperature grid
@@ -297,6 +362,76 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
         kappa_planck_host(j,i) = combine_planck_table(j, i);
       }
     }
+
+    // Precompute log-space grid parameters for uniform-log lookup
+    Real log_tmin    = std::log10(temp_host(0));
+    Real log_tmax    = std::log10(temp_host(n_temp - 1));
+    Real log_rhomin  = std::log10(rho_host(0));
+    Real log_rhomax  = std::log10(rho_host(n_rho  - 1));
+    Real inv_dlogT   = (Real)(n_temp - 1) / (log_tmax   - log_tmin  );
+    Real inv_dlogrho = (Real)(n_rho  - 1) / (log_rhomax - log_rhomin);
+
+    // Uniform-log-spacing check
+    Real tol = 1e-4;
+    Real dlogT_expected = 1.0 / inv_dlogT;
+    Real dlogR_expected = 1.0 / inv_dlogrho;
+    for (int i = 1; i < n_temp; ++i) {
+      Real d = std::log10(temp_host(i)) - std::log10(temp_host(i-1));
+      if (std::fabs(d - dlogT_expected) > tol) {
+        std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                  << " in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "opacity temp_grid is not uniform in log10 (at i="
+                  << i << ", d=" << d << ", expected=" << dlogT_expected << ")"
+                  << std::endl;
+        exit(EXIT_FAILURE);
+      }
+    }
+    for (int i = 1; i < n_rho; ++i) {
+      Real d = std::log10(rho_host(i)) - std::log10(rho_host(i-1));
+      if (std::fabs(d - dlogR_expected) > tol) {
+        std::cerr << "### FATAL ERROR on rank " << global_variable::my_rank
+                  << " in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "opacity rho_grid is not uniform in log10 (at i="
+                  << i << ", d=" << d << ", expected=" << dlogR_expected << ")"
+                  << std::endl;
+        exit(EXIT_FAILURE);
+      }
+    }
+
+    data.log_tmin    = log_tmin;
+    data.log_rhomin  = log_rhomin;
+    data.inv_dlogT   = inv_dlogT;
+    data.inv_dlogrho = inv_dlogrho;
+
+    // Store log10(kappa) in place: interpolation is log-space bilinear
+    for (int j = 0; j < n_temp; ++j) {
+      for (int i = 0; i < n_rho; ++i) {
+        kappa_ross_host(j,i)   = std::log10(kappa_ross_host(j,i));
+        kappa_planck_host(j,i) = std::log10(kappa_planck_host(j,i));
+      }
+    }
+
+    /*// SANITY CHECK
+    if (global_variable::my_rank == 0) {
+    std::cout << "[opcheck loader] n_temp=" << n_temp << " n_rho=" << n_rho
+              << " log_tmin=" << log_tmin << " log_tmax=" << log_tmax
+              << " log_rhomin=" << log_rhomin << " log_rhomax=" << log_rhomax
+              << " inv_dlogT=" << inv_dlogT << " inv_dlogrho=" << inv_dlogrho
+              << " dlogT=" << dlogT_expected << " dlogR=" << dlogR_expected
+              << " low_rho_threshold_cgs=" << pmbp->prad->low_rho_threshold_cgs
+              << " low_temp_threshold_cgs=" << pmbp->prad->low_temp_threshold_cgs
+              << std::endl;
+    std::cout << "[opcheck loader] sample log10 kappas: "
+              << "log kR(0,0)="      << kappa_ross_host(0,0)
+              << " log kR(nt-1,0)="  << kappa_ross_host(n_temp-1,0)
+              << " log kR(0,nr-1)="  << kappa_ross_host(0,n_rho-1)
+              << " log kR(nt-1,nr-1)=" << kappa_ross_host(n_temp-1,n_rho-1)
+              << std::endl;
+     }
+    // END SANITY CHECK */
+
+
+
     
     // copy to instance
     Kokkos::deep_copy(data.rho_grid,  rho_host);
@@ -1328,19 +1463,93 @@ void TDEFluxes(HistoryData *pdata, Mesh *pm) {
 //! \fn void RefinementCondition()
 //! Implements custom AMR refinement condition
 void RefinementCondition(MeshBlockPack* pmbp) {
-  //auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
-  /*int nmb = pmbp->nmb_thispack;
+  auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
+  int nmb = pmbp->nmb_thispack;
   int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
+
+  // capture variables for kernels
+  auto &indcs = pmbp->pmesh->mb_indcs;
+  int &is = indcs.is, nx1 = indcs.nx1;
+  int &js = indcs.js, nx2 = indcs.nx2;
+  int &ks = indcs.ks, nx3 = indcs.nx3;
+  const int nkji = nx3*nx2*nx1;
+  const int nji  = nx2*nx1;
+  auto &multi_d = pmbp->pmesh->multi_d;
+  auto &three_d = pmbp->pmesh->three_d;
+  auto &size = pmbp->pmb->mb_size;
+  auto &w0 = pmbp->phydro->w0;
+  auto &mblev = pmbp->pmb->mb_lev;
+  int root_lev = pmbp->pmesh->root_level;
+
+  Real maxdens = tde.amr_maxdens;
+  Real mindens = tde.amr_mindens;
+  Real maxd2 = tde.amr_maxd2;
+  Real mind2 = tde.amr_mind2;
+  Real zmax = tde.amr_zmax;
+  Real r_mid = tde.amr_r_mid;
+  Real r_out = tde.amr_r_out;
+  int lvl_in = tde.amrlvl_in;
+  int lvl_mid = tde.amrlvl_mid;
+  int lvl_out = tde.amrlvl_out;
 
   par_for_outer("UserProblem_AMR::REFCOND", DevExeSpace(), 0, 0, 0, (nmb - 1),
   KOKKOS_LAMBDA(TeamMember_t tmember, const int m) {
-    //Placeholder (does nothing for now)
-    refine_flag.d_view(m + mbs) = 0;
+    //max rest-frame density in this meshblock
+    Real team_dmax = 0.0;
+    Kokkos::parallel_reduce(Kokkos::TeamThreadRange(tmember, nkji),
+    [=](const int idx, Real& dmax) {
+      int k = (idx)/nji;
+      int j = (idx - k*nji)/nx1;
+      int i = (idx - k*nji - j*nx1) + is;
+      j += js;
+      k += ks;
+      dmax = fmax(w0(m,IDN,k,j,i), dmax);
+    },Kokkos::Max<Real>(team_dmax));
+
+    //max normalized second derivative of density in this meshblock
+    Real team_d2max = 0.0;
+    Kokkos::parallel_reduce(Kokkos::TeamThreadRange(tmember, nkji),
+    [=](const int idx, Real& d2max) {
+      int k = (idx)/nji;
+      int j = (idx - k*nji)/nx1;
+      int i = (idx - k*nji - j*nx1) + is;
+      j += js;
+      k += ks;
+      Real d = w0(m,IDN,k,j,i);
+      Real d2 = fabs(w0(m,IDN,k,j,i+1) - 2.0*d + w0(m,IDN,k,j,i-1));
+      if (multi_d) {d2 += fabs(w0(m,IDN,k,j+1,i) - 2.0*d + w0(m,IDN,k,j-1,i));}
+      if (three_d) {d2 += fabs(w0(m,IDN,k+1,j,i) - 2.0*d + w0(m,IDN,k-1,j,i));}
+      d2max = fmax((d2/d), d2max);
+    },Kokkos::Max<Real>(team_d2max));
+
+    //largest |z| spanned by this meshblock
+    Real zblk = fmax(fabs(size.d_view(m).x3min), fabs(size.d_view(m).x3max));
+
+    //minimum radius spanned by this MeshBlock
+    Real rx = fmax(0.0, fmax(size.d_view(m).x1min, -size.d_view(m).x1max));
+    Real ry = fmax(0.0, fmax(size.d_view(m).x2min, -size.d_view(m).x2max));
+    Real rz = fmax(0.0, fmax(size.d_view(m).x3min, -size.d_view(m).x3max));
+    Real rmin = sqrt(rx*rx + ry*ry + rz*rz);
+
+    //maximum physical level (0=root grid) allowed in this radial zone
+    int cap = (rmin > r_out) ? lvl_out : ((rmin > r_mid) ? lvl_mid : lvl_in);
+    int lev = mblev.d_view(m) - root_lev;
+    
+    //only mark for derefinement when flag has not been set by other criteria
+    int &flag = refine_flag.d_view(m+mbs);
+    bool ref_dens = (team_dmax > maxdens);
+    bool ref_d2 = ((team_d2max > maxd2) && (team_dmax > 2.0*mindens));
+    if ((ref_dens || ref_d2) && (zblk < zmax)) {flag = 1;}
+    if ((team_dmax < mindens) && (team_d2max < mind2) && (flag == 0)) {flag = -1;}
+        
+    // radial level cap, applied to flags set by this and any preceding criterion
+    if ((flag > 0) && (lev >= cap)) {flag = 0;}
+    if (lev > cap) {flag = -1;}
   });
 
-  // sync host and device
+  // sync device array with host
   refine_flag.template modify<DevExeSpace>();
-  refine_flag.template sync<HostMemSpace>();*/
+  refine_flag.template sync<HostMemSpace>();
   return;
 }
 
