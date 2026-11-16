@@ -51,7 +51,8 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
   // debug flags
   int debug_eos_statistic = eos_data.debug_eos_statistic;
   int debug_fill_zero = eos_data.debug_fill_zero;
-
+  constexpr int NDEBUG_EOS = 6;
+  
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int &is = indcs.is, &js = indcs.js, &ks = indcs.ks;
   auto &size = pmy_pack->pmb->mb_size;
@@ -89,8 +90,10 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
 
   //int nfloord_=0, nfloore_=0, nceilv_=0, nfail_=0, maxit_=0, ncells_=0;
   if (debug_eos_statistic==1){
-    if (nscal < 6){
-        std::cerr<<"Expected at least six scalars for: (0) total counter (1) density floor (2) energy floor (3) velcoity ceiling (4) cons2prim failure (5) excised cell, but current nscalar="<<nscal<<std::endl;
+    if (nscal < NDEBUG_EOS){
+      std::cout<< "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__<<std::endl;
+      std::cout<<"Expected at least " << NDEBUG_EOS << " scalars for: (0) total counter (1) density floor (2) energy floor (3) velcoity ceiling (4) cons2prim failure (5) excised cell, but current nscalar="<<nscal<<std::endl;
+      std::exit(EXIT_FAILURE);
     }  
   }
   
@@ -244,8 +247,8 @@ void IdealGRHydro::ConsToPrim(DvceArray5D<Real> &cons, DvceArray5D<Real> &prim,
     KOKKOS_LAMBDA(int m, int k, int j, int i) {
       Real den = cons(m,IDN,k,j,i);
 
-      // Zero all scalar cons entries
-      for (int n=nhyd; n<(nhyd+nscal); ++n) {
+      // Zero all debug scalar cons entries
+      for (int n=nhyd; n<(nhyd+NDEBUG_EOS); ++n) {
         cons(m,n,k,j,i) = 0.0;
       }
 
