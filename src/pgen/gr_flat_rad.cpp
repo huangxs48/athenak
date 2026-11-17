@@ -224,6 +224,20 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     tde.read_kappa_name = pin->GetOrAddString("problem","kappa_name","");
     tde.read_kappa_ross_name = pin->GetOrAddString("problem","kappa_ross_name","");
     tde.read_kappa_planck_name = pin->GetOrAddString("problem","kappa_planck_name","");
+    
+    // Opacity for gas below the table's rho_min (see radiation_opacities.hpp).
+    //   kappa_floor            [cm^2/g]  absorption = emission opacity of the filler
+    //   kappa_floor_cap_planck [bool]    if true, use min(kappa_floor, kappa_P(rho_min,T))
+    // Read here (before the restart return) so both can be changed at a restart.
+    pmbp->prad->kappa_floor_cgs =
+        pin->GetOrAddReal("problem","kappa_floor",1.0e-6);
+    pmbp->prad->kappa_floor_cap_planck =
+        pin->GetOrAddBoolean("problem","kappa_floor_cap_planck",true);
+    if (global_variable::my_rank == 0) {
+      std::cout << "Below-rho_min opacity floor: kappa_floor = "
+                << pmbp->prad->kappa_floor_cgs << " cm^2/g, cap at kappa_P(rho_min,T) = "
+                << (pmbp->prad->kappa_floor_cap_planck ? "on" : "off") << std::endl;
+    }
   }
 
   //if using user defined fallback rate

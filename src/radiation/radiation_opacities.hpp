@@ -71,7 +71,9 @@ void UserOpacityFunction(// density and density scale
                      const Real log_tmin, const Real log_rhomin,
                      const Real inv_dlogT, const Real inv_dlogrho,
                      const Real low_rho_threshold_cgs,
-                     const Real low_temp_threshold_cgs){
+                     const Real low_temp_threshold_cgs,
+		     const Real kappa_floor_cgs,
+                     const bool kappa_floor_cap_planck){
   
 
   //allocate individual views for the Opacity Data structure
@@ -89,14 +91,16 @@ void UserOpacityFunction(// density and density scale
   (void)low_temp_threshold_cgs;  // retained in the signature, no longer used
 
   if (dens_cgs < rho_floor_cgs){
-    Real k_floor = 1.0e-6;
-
-    Real kappa_ross_edge, kappa_planck_edge;
-    InterpolateKappa(n_rho, n_temp, rho_grid, temp_grid, kappa_ross, kappa_planck,
-                     log_tmin, log_rhomin, inv_dlogT, inv_dlogrho,
-                     pow(10.0, log_rhomin), temp_cgs, k_s,
-                     kappa_ross_edge, kappa_planck_edge);
-    Real k_abs = fmin(k_floor, kappa_planck_edge);
+    Real k_floor = kappa_floor_cgs;
+    Real k_abs = k_floor;
+    if (kappa_floor_cap_planck) {
+      Real kappa_ross_edge, kappa_planck_edge;
+      InterpolateKappa(n_rho, n_temp, rho_grid, temp_grid, kappa_ross, kappa_planck,
+                       log_tmin, log_rhomin, inv_dlogT, inv_dlogrho,
+                       pow(10.0, log_rhomin), temp_cgs, k_s,
+                       kappa_ross_edge, kappa_planck_edge);
+      k_abs = fmin(k_floor, kappa_planck_edge);
+    }
 
     sigma_a = dens*k_abs*density_scale*length_scale;
     sigma_p = 0.0;

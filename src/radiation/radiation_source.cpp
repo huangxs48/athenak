@@ -92,6 +92,8 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
   Real &kappa_p_ = kappa_p;
   Real &low_rho_threshold_cgs_ = low_rho_threshold_cgs;
   Real &low_temp_threshold_cgs_ = low_temp_threshold_cgs;
+  Real kappa_floor_cgs_ = kappa_floor_cgs;
+  bool kappa_floor_cap_planck_ = kappa_floor_cap_planck;
   bool &power_opacity_ = power_opacity;
   auto &nh_c_ = nh_c;
   auto &tt = tet_c;
@@ -483,7 +485,8 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
           opacity_kappa_ross, opacity_kappa_planck,
           opacity_log_tmin, opacity_log_rhomin,
           opacity_inv_dlogT, opacity_inv_dlogrho,
-          low_rho_threshold_cgs_, low_temp_threshold_cgs_);
+          low_rho_threshold_cgs_, low_temp_threshold_cgs_,
+          kappa_floor_cgs_, kappa_floor_cap_planck_);
 
 
       /*// SANITY CHECK (comment out this block to disable) 
